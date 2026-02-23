@@ -77,15 +77,15 @@
   });
 
   recognition.addEventListener("error", function (event) {
+    if (event.error === "aborted") return;
     const messages = {
       "not-allowed": "Microphone access denied. Please allow microphone permission.",
       "no-speech": "No speech detected. Try again.",
       network: "Network error. Check your connection.",
-      aborted: "",
     };
     const msg = messages[event.error] || "Error: " + event.error;
-    if (msg) statusEl.textContent = msg;
     stopListening();
+    statusEl.textContent = msg;
   });
 
   recognition.addEventListener("end", function () {
