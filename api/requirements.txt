@@ -13,7 +13,7 @@ typing_extensions==4.15.0
 uvicorn==0.41.0
 langchain 
 langchain-community 
-langchain-google-genai 
+langchain-ollama
 python-dotenv
 pydantic
 duckduckgo-search
