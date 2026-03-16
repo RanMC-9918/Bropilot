@@ -86,6 +86,9 @@
        case "alert":
          alert(secondPart);
          break;
+      case "alerts":
+         alert(secondPart);
+         break;
        default:
          break;
      }
