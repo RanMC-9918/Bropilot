@@ -23,7 +23,7 @@
   recognition.lang = "en-US";
 
   let isListening = false;
-  let finalTranscript = "";
+  let finalTranscript = [];
 
   function startListening() {
     recognition.start();
@@ -51,7 +51,7 @@
   });
 
   clearBtn.addEventListener("click", function () {
-    finalTranscript = "";
+    finalTranscript = [];
     finalEl.textContent = "";
     interimEl.textContent = "";
   });
@@ -62,7 +62,8 @@
     for (let i = event.resultIndex; i < event.results.length; i++) {
       const transcript = event.results[i][0].transcript;
       if (event.results[i].isFinal) {
-        finalTranscript += transcript + " ";
+        finalTranscript += transcript + "\n";
+        handleResult(finalTranscript[finalTranscript.length-1]);
       } else {
         interimTranscript += transcript;
       }
@@ -70,7 +71,7 @@
 
     finalEl.textContent = finalTranscript;
     interimEl.textContent = interimTranscript;
-    handleResult(interimTranscript);
+    
     // Auto-scroll to the bottom of the transcript box
     const box = document.querySelector(".transcript-box");
     box.scrollTop = box.scrollHeight;
