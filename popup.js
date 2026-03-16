@@ -70,11 +70,25 @@
 
     finalEl.textContent = finalTranscript;
     interimEl.textContent = interimTranscript;
-
+    handleResult(interimTranscript);
     // Auto-scroll to the bottom of the transcript box
     const box = document.querySelector(".transcript-box");
     box.scrollTop = box.scrollHeight;
+    
   });
+
+  function handleResult(result){
+    let firstPart = result.substring(0, result.indexOf(" "));
+    let secondPart = result.substring(result.indexOf(" ")+1);
+    
+     switch(firstPart){
+       case "alert":
+         alert(secondPart);
+         break;
+       default:
+         break;
+     }
+  }
 
   recognition.addEventListener("error", function (event) {
     if (event.error === "aborted") return;
