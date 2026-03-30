@@ -78,16 +78,22 @@
     
   });
 
+  function command(c, x, func){
+    while(x.indexOf(c) != -1){
+      x = x.substring(x.indexOf+c.length+1);
+    }
+    func(x);
+  }
+
   function handleResult(result){
-    let firstPart = result.substring(0, result.indexOf(" "));
-    let secondPart = result.substring(result.indexOf(" ")+1);
+    let firstPart = result;
     
      switch(firstPart){
        case "alert":
-         alert(secondPart);
+         command("alert", result, alert);
          break;
       case "alerts":
-         alert(secondPart);
+         command("alert", result, alert);
          break;
        default:
          break;
