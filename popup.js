@@ -7,6 +7,13 @@
   const finalEl = document.getElementById("final");
   const clearBtn = document.getElementById("clearBtn");
 
+  const urlParams = new URLSearchParams(window.location.search);
+  const isRequestingMic = urlParams.get("request_mic") === "1";
+
+  if (isRequestingMic) {
+    statusEl.textContent = "Click icon to grant mic access";
+  }
+
   // Check for browser support
   const SpeechRecognition =
     window.SpeechRecognition || window.webkitSpeechRecognition;
@@ -25,8 +32,51 @@
   let isListening = false;
   let finalTranscript = [];
 
-  function startListening() {
-    recognition.start();
+  async function startListening() {
+    try {
+      const perm = await navigator.permissions.query({ name: 'microphone' });
+      if (perm.state !== 'granted') {
+        if (isRequestingMic) {
+          try {
+            const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+            stream.getTracks().forEach(track => track.stop());
+            statusEl.textContent = "Access granted! You can close this tab.";
+            statusEl.style.color = "#99f0ff";
+            micBtn.style.display = "none";
+          } catch (e) {
+            statusEl.textContent = "Access denied. Please check site settings.";
+          }
+          return;
+        } else {
+          statusEl.textContent = "Opening tab for mic access...";
+          chrome.tabs.create({ url: chrome.runtime.getURL("popup.html?request_mic=1") });
+          return;
+        }
+      }
+    } catch (err) {
+      if (isRequestingMic) {
+        try {
+          const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+          stream.getTracks().forEach(track => track.stop());
+          statusEl.textContent = "Access granted! You can close this tab.";
+          statusEl.style.color = "#99f0ff";
+          micBtn.style.display = "none";
+        } catch (e) {
+          statusEl.textContent = "Access denied. Please check site settings.";
+        }
+        return;
+      } else {
+        statusEl.textContent = "Opening tab for mic access...";
+        chrome.tabs.create({ url: chrome.runtime.getURL("popup.html?request_mic=1") });
+        return;
+      }
+    }
+
+    try {
+      recognition.start();
+    } catch (e) {
+      // Ignore if already started
+    }
     isListening = true;
     micBtn.classList.add("active");
     micBtn.setAttribute("aria-label", "Stop microphone");
