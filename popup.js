@@ -25,6 +25,7 @@
   let isListening = false;
   let finalTranscript = [];
 
+  
   function startListening() {
     recognition.start();
     isListening = true;
@@ -60,7 +61,7 @@
     let interimTranscript = "";
 
     for (let i = event.resultIndex; i < event.results.length; i++) {
-      const transcript = event.results[i][0].transcript;
+      const transcript = event.results[i][0].transcript.trim();
       if (event.results[i].isFinal) {
         finalTranscript.push(transcript);
         handleResult(finalTranscript[finalTranscript.length - 1]);
@@ -70,6 +71,10 @@
     }
 
     finalEl.textContent = finalTranscript.join("\n");
+    
+    finalEl.style.animation = "none";
+    void finalEl.offsetWidth; // force reflow
+    finalEl.style.animation = "fadeIn 0.6s ease-out forwards";
     interimEl.textContent = interimTranscript;
     
     // Auto-scroll to the bottom of the transcript box
