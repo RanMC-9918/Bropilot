@@ -5,8 +5,8 @@
 }
 
 body {
-  width: 380px;
-  min-height: 500px;
+  width: 400px;
+  min-height: 560px;
   font-family: "Inter", sans-serif;
   background: #171f31;
 }
@@ -14,9 +14,9 @@ body {
 .container {
   display: flex;
   flex-direction: column;
-  align-items: center;
-  padding: 24px 20px 20px;
-  gap: 16px;
+  padding: 18px 16px 16px;
+  gap: 12px;
+  height: 560px;
 }
 
 header {
@@ -31,7 +31,7 @@ header {
 }
 
 h1 {
-  font-size: 22px;
+  font-size: 21px;
   font-weight: 700;
   color: #b5cfff;
   letter-spacing: 1px;
@@ -41,99 +41,153 @@ h1 {
 .status {
   font-size: 13px;
   color: #8690ad;
-  min-height: 18px;
-  text-align: center;
+  min-height: 16px;
+  text-align: left;
   font-family: "Inter", sans-serif;
 }
 
-/* Mic button */
-.mic-btn {
-  width: 67px;
-  height: 67px;
-  border-radius: 50%;
-  border: none;
-  background: #293775;
-  color: #e0e5ff;
-  cursor: pointer;
+.chat-box {
+  width: 100%;
+  flex: 1;
+  background: #1a2338;
+  border: 1px solid #2a3657;
+  border-radius: 16px;
+  box-shadow: 0 7px 13px 9px rgba(12, 13, 20, 0.25);
+  padding: 12px;
+  overflow-y: auto;
   display: flex;
-  align-items: center;
-  justify-content: center;
-  box-shadow: 0 1px 9px 8px rgba(12, 13, 20, 0.4);
-  transition: background 0.2s, color 0.2s, transform 0.3s;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.message {
+  max-width: 92%;
+  font-size: 13.5px;
+  line-height: 1.35;
+  border-radius: 12px;
+  padding: 8px 10px;
+  word-break: break-word;
+  white-space: pre-wrap;
+  animation: fadeIn 0.12s ease-out forwards;
+}
+
+.message.user {
+  align-self: flex-end;
+  background: #33488c;
+  color: #e7edff;
+}
+
+.message.bot {
+  align-self: flex-start;
+  background: #222f4f;
+  color: #cad7ff;
+}
+
+.message.system {
+  align-self: center;
+  background: #29375c;
+  color: #d6deff;
+  font-size: 12px;
+}
+
+.message.tool {
+  align-self: flex-start;
+  background: #213a4f;
+  color: #b7ecff;
+  border: 1px solid #2f5f80;
+  font-size: 12.5px;
+}
+
+.composer {
+  width: 100%;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+#messageInput {
+  width: 100%;
+  resize: none;
+  border: 1px solid #3b4a73;
+  border-radius: 12px;
+  padding: 10px;
+  font: inherit;
+  font-size: 13.5px;
+  color: #e4ebff;
+  background: #1f2a45;
+  outline: none;
+}
+
+#messageInput::placeholder {
+  color: #8d9bc2;
+}
+
+#messageInput:focus {
+  border-color: #6f8ef4;
+}
+
+.composer-actions {
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.mic-btn,
+.send-btn {
+  flex: 1;
+  border-radius: 10px;
+  border: none;
+  height: 38px;
+  font-size: 13px;
+  font-weight: 600;
+  font-family: "Inter", sans-serif;
+  cursor: pointer;
+  transition: background 0.2s, transform 0.2s, color 0.2s;
+}
+
+.mic-btn {
+  background: #2f3f6d;
+  color: #e2e9ff;
+}
+
+.mic-btn:hover,
+.send-btn:hover,
+.clear-btn:hover {
+  transform: translateY(-1px);
 }
 
 .mic-btn:hover {
   background: #394ca1;
-  transform: scale(1.1);
-}
-.mic-btn:active {
-  background: #202a57;
-  transform: scale(0.7);
 }
 
 .mic-btn.active {
-  background: #abbaff;
-  color: #fff;
-  animation:
-    pulse 2s infinite;
-  .mic-icon {
-    width: 35px;
-  height: 35px;
-  color: #082833;
-  }
+  background: #83c9ff;
+  color: #0f233d;
 }
 
-.mic-icon {
-  width: 35px;
-  height: 35px;
-  color: #e0f7ff;
+.send-btn {
+  background: #4a69c8;
+  color: #f3f6ff;
 }
 
-
-@keyframes pulse {
-  0%   { box-shadow: 0 0 0 0 rgba(160, 174, 255, 0.6); }
-  70%  { box-shadow: 0 0 0 14px rgba(139, 228, 250, 0); }
-  100% { box-shadow: 0 0 0 0 rgba(139, 224, 250, 0); }
+.send-btn:hover {
+  background: #5a79da;
 }
 
-
-/* Transcript area */
-.transcript-box {
-  width: 100%;
-  min-height: 200px;
-  background: #1a2338;
-  border: 6px solid #1d273f;
-  outline: 1px solid #404d69;
-  border-radius: 35px;
-  box-shadow: 0 7px 13px 9px rgba(12, 13, 20, 0.4);
-  padding: 14px;
-  overflow-y: auto;
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-}
-
-.interim {
-  font-size: 14px;
-  color: #949bb8;
-  font-family: "Inter", sans-serif;
-  white-space: pre-wrap;
-  overflow: hidden;
-  white-space: nowrap;
-  display: inline-block;
-  word-break: break-word;
-  opacity: 0;
-  animation: fadeIn 0.1s ease-out forwards;
-}
-
-.final {
-  font-size: 14px;
-  color: #adb7e4;
-  white-space: pre-wrap;
-  word-break: break-word;
-  font-family: "Inter", sans-serif;
-  opacity: 0;
-  animation: fadeIn 0.1s ease-out forwards;
+.clear-btn {
+  align-self: flex-end;
+  width: auto;
+  min-width: 92px;
+  height: 30px;
+  padding: 0 10px;
+  border-radius: 8px;
+  background: transparent;
+  border: 1px solid #455278;
+  color: #9eb0dd;
+  font-size: 12px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: background 0.2s, transform 0.2s, color 0.2s;
 }
 
 @keyframes fadeIn {
@@ -146,33 +200,8 @@ h1 {
     transform: translateY(0);
   }
 }
-/* Clear button */
-.clear-btn {
-  padding: 7px 22px;
-  border: 1px solid #47516d;
-  border-radius: 10px;
-  background: transparent;
-  color: #9797b0;
-  font-size: 13px;
-  cursor: pointer;
-  transition: background 0.2s, color 0.2s, transform 0.3s;
-  font-family: "Inter", sans-serif;
-  position: fixed; 
-  bottom: 30px;
-}
 
 .clear-btn:hover {
-  background: #889ce0;
-  color: #1d2122;
-  transform: scale(1.1);
-}
-.clear-btn:active {
-  background: #606b9e;
-  color: #101213;
-  transform: scale(0.7);
-}
-
-
-body {
-  font-family: "Inter", sans-serif;
+  background: #2f3b5a;
+  color: #dbe6ff;
 }
