@@ -9,7 +9,10 @@ function nowIso() {
 }
 
 async function getState() {
-  const data = await chrome.storage.local.get(["chatHistory", "pendingRequest"]);
+  const data = await chrome.storage.local.get([
+    "chatHistory",
+    "pendingRequest",
+  ]);
   return {
     chatHistory: Array.isArray(data.chatHistory) ? data.chatHistory : [],
     pendingRequest: data.pendingRequest || null,
@@ -33,13 +36,29 @@ async function appendHistory(item) {
 function normalizeActions(responseData) {
   if (Array.isArray(responseData.actions)) {
     return responseData.actions
-      .filter((a) => a && typeof a.command === "string" && typeof a.commandInfo === "string")
+      .filter(
+        (a) =>
+          a &&
+          typeof a.command === "string" &&
+          typeof a.commandInfo === "string",
+      )
       .map((a) => ({ command: a.command, commandInfo: a.commandInfo }));
   }
 
-  if (typeof responseData.command === "string" && typeof responseData.commandInfo === "string") {
-    if (responseData.command === "scroll_to_word" || responseData.command === "click") {
-      return [{ command: responseData.command, commandInfo: responseData.commandInfo }];
+  if (
+    typeof responseData.command === "string" &&
+    typeof responseData.commandInfo === "string"
+  ) {
+    if (
+      responseData.command === "scroll_to_word" ||
+      responseData.command === "click"
+    ) {
+      return [
+        {
+          command: responseData.command,
+          commandInfo: responseData.commandInfo,
+        },
+      ];
     }
   }
 
@@ -47,14 +66,19 @@ function normalizeActions(responseData) {
 }
 
 function normalizeAssistantText(responseData) {
-  if (typeof responseData.assistantMessage === "string" && responseData.assistantMessage.trim()) {
+  if (
+    typeof responseData.assistantMessage === "string" &&
+    responseData.assistantMessage.trim()
+  ) {
     return responseData.assistantMessage.trim();
   }
 
   if (
     typeof responseData.commandInfo === "string" &&
     responseData.commandInfo.trim() &&
-    (responseData.command === "assistant_response" || responseData.command === "no_tool_called" || responseData.command === "assistant_text")
+    (responseData.command === "assistant_response" ||
+      responseData.command === "no_tool_called" ||
+      responseData.command === "assistant_text")
   ) {
     return responseData.commandInfo.trim();
   }
@@ -66,7 +90,9 @@ async function getPageContext(tabId) {
   const [{ result }] = await chrome.scripting.executeScript({
     target: { tabId },
     func: (maxChars) => {
-      const html = document.documentElement ? document.documentElement.outerHTML : "";
+      const html = document.documentElement
+        ? document.documentElement.outerHTML
+        : "";
       return {
         html: html.slice(0, maxChars),
         url: location.href,
@@ -125,9 +151,14 @@ async function runScrollTool(tabId, regexText) {
       const regex = parseRegex(rawRegex);
       if (!regex) return { ok: false, reason: "Invalid regex." };
 
-      document.querySelectorAll(`.${HIGHLIGHT_ID}`).forEach((el) => el.classList.remove(HIGHLIGHT_ID));
+      document
+        .querySelectorAll(`.${HIGHLIGHT_ID}`)
+        .forEach((el) => el.classList.remove(HIGHLIGHT_ID));
 
-      const walker = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT);
+      const walker = document.createTreeWalker(
+        document.body,
+        NodeFilter.SHOW_TEXT,
+      );
       let node;
       while ((node = walker.nextNode())) {
         const text = node.nodeValue || "";
@@ -190,10 +221,14 @@ async function runClickTool(tabId, regexText) {
       const regex = parseRegex(rawRegex);
       if (!regex) return { ok: false, reason: "Invalid regex." };
 
-      document.querySelectorAll(`.${HIGHLIGHT_ID}`).forEach((el) => el.classList.remove(HIGHLIGHT_ID));
+      document
+        .querySelectorAll(`.${HIGHLIGHT_ID}`)
+        .forEach((el) => el.classList.remove(HIGHLIGHT_ID));
 
       const candidates = Array.from(
-        document.querySelectorAll("a, button, input[type='button'], input[type='submit'], [role='button']")
+        document.querySelectorAll(
+          "a, button, input[type='button'], input[type='submit'], [role='button']",
+        ),
       );
 
       for (const el of candidates) {
@@ -218,12 +253,16 @@ async function runClickTool(tabId, regexText) {
 async function executeToolAction(tabId, action) {
   if (action.command === "scroll_to_word") {
     const result = await runScrollTool(tabId, action.commandInfo);
-    return result.ok ? `Scrolled to match: ${result.match}` : `Scroll failed: ${result.reason}`;
+    return result.ok
+      ? `Scrolled to match: ${result.match}`
+      : `Scroll failed: ${result.reason}`;
   }
 
   if (action.command === "click") {
     const result = await runClickTool(tabId, action.commandInfo);
-    return result.ok ? `Clicked: ${result.match}` : `Click failed: ${result.reason}`;
+    return result.ok
+      ? `Clicked: ${result.match}`
+      : `Click failed: ${result.reason}`;
   }
 
   return `Unsupported tool action: ${action.command}`;

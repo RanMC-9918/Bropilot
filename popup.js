@@ -10,7 +10,8 @@
 
   const DICTATION_IDLE_MS = 5000;
 
-  const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+  const SpeechRecognition =
+    window.SpeechRecognition || window.webkitSpeechRecognition;
   const hasSpeech = Boolean(SpeechRecognition);
   const recognition = hasSpeech ? new SpeechRecognition() : null;
 
@@ -33,14 +34,19 @@
       video: false,
     };
 
-    if (navigator.mediaDevices && typeof navigator.mediaDevices.getUserMedia === "function") {
+    if (
+      navigator.mediaDevices &&
+      typeof navigator.mediaDevices.getUserMedia === "function"
+    ) {
       const stream = await navigator.mediaDevices.getUserMedia(constraints);
       stream.getTracks().forEach((track) => track.stop());
       return true;
     }
 
     const legacyGetUserMedia =
-      navigator.getUserMedia || navigator.webkitGetUserMedia || navigator.mozGetUserMedia;
+      navigator.getUserMedia ||
+      navigator.webkitGetUserMedia ||
+      navigator.mozGetUserMedia;
 
     if (!legacyGetUserMedia) {
       throw new Error("This browser does not support microphone capture APIs.");
@@ -78,7 +84,10 @@
   }
 
   async function loadState() {
-    const data = await chrome.storage.local.get(["chatHistory", "pendingRequest"]);
+    const data = await chrome.storage.local.get([
+      "chatHistory",
+      "pendingRequest",
+    ]);
     const history = Array.isArray(data.chatHistory) ? data.chatHistory : [];
     const pending = data.pendingRequest || null;
 
@@ -88,7 +97,9 @@
       setStatus("Assistant is working in background...");
       sendBtn.disabled = true;
     } else {
-      setStatus(isListening ? "Dictating... auto-send after 5s silence" : "Ready");
+      setStatus(
+        isListening ? "Dictating... auto-send after 5s silence" : "Ready",
+      );
       sendBtn.disabled = false;
     }
 
@@ -124,7 +135,9 @@
     }
 
     messageInput.value = "";
-    setStatus(source === "dictation" ? "Sending dictated message..." : "Sending...");
+    setStatus(
+      source === "dictation" ? "Sending dictated message..." : "Sending...",
+    );
 
     try {
       await chrome.runtime.sendMessage({
@@ -250,7 +263,8 @@
     recognition.addEventListener("error", (event) => {
       if (event.error === "aborted") return;
       const messages = {
-        "not-allowed": "Microphone access denied. Please allow microphone permission.",
+        "not-allowed":
+          "Microphone access denied. Please allow microphone permission.",
         "no-speech": "No speech detected. Keep speaking.",
         network: "Network error. Check your connection.",
       };

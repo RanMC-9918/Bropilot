@@ -142,7 +142,10 @@ h1 {
   font-weight: 600;
   font-family: "Inter", sans-serif;
   cursor: pointer;
-  transition: background 0.2s, transform 0.2s, color 0.2s;
+  transition:
+    background 0.2s,
+    transform 0.2s,
+    color 0.2s;
 }
 
 .mic-btn {
@@ -187,7 +190,10 @@ h1 {
   font-size: 12px;
   font-weight: 500;
   cursor: pointer;
-  transition: background 0.2s, transform 0.2s, color 0.2s;
+  transition:
+    background 0.2s,
+    transform 0.2s,
+    color 0.2s;
 }
 
 @keyframes fadeIn {

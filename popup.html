@@ -1,39 +1,51 @@
-<!DOCTYPE html>
+<!doctype html>
 <html lang="en">
-<head>
-  <meta charset="UTF-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Bropilot</title>
-  <link rel="stylesheet" href="popup.css" />
-  <link rel="preconnect" href="https://fonts.googleapis.com">
-  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-  <link href="https://fonts.googleapis.com/css2?family=Inter:ital,opsz,wght@0,14..32,100..900;1,14..32,100..900&display=swap" rel="stylesheet">
-</head>
-<body>
-  <div class="container">
-    <header>
-      <img src="icons/bropiloticon.png" alt="Bropilot icon" class="logo" />
-      <h1>Bropilot</h1>
-    </header>
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Bropilot</title>
+    <link rel="stylesheet" href="popup.css" />
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Inter:ital,opsz,wght@0,14..32,100..900;1,14..32,100..900&display=swap"
+      rel="stylesheet"
+    />
+  </head>
+  <body>
+    <div class="container">
+      <header>
+        <img src="icons/bropiloticon.png" alt="Bropilot icon" class="logo" />
+        <h1>Bropilot</h1>
+      </header>
 
-    <div class="status" id="status">Type or dictate a message</div>
+      <div class="status" id="status">Type or dictate a message</div>
 
-    <div class="chat-box" id="chatBox">
-      <div class="message bot">
-        I can chat, scroll to text, and click matching buttons or links on this page.
+      <div class="chat-box" id="chatBox">
+        <div class="message bot">
+          I can chat, scroll to text, and click matching buttons or links on
+          this page.
+        </div>
       </div>
-    </div>
 
-    <div class="composer">
-      <textarea id="messageInput" rows="3" placeholder="Ask about this page or give a command..."></textarea>
-      <div class="composer-actions">
-        <button id="micBtn" class="mic-btn" aria-label="Start dictation">Dictate</button>
-        <button id="sendBtn" class="send-btn" aria-label="Send message">Send</button>
+      <div class="composer">
+        <textarea
+          id="messageInput"
+          rows="3"
+          placeholder="Ask about this page or give a command..."
+        ></textarea>
+        <div class="composer-actions">
+          <button id="micBtn" class="mic-btn" aria-label="Start dictation">
+            Dictate
+          </button>
+          <button id="sendBtn" class="send-btn" aria-label="Send message">
+            Send
+          </button>
+        </div>
       </div>
-    </div>
 
-    <button id="clearBtn" class="clear-btn">Clear Chat</button>
-  </div>
-  <script src="popup.js"></script>
-</body>
+      <button id="clearBtn" class="clear-btn">Clear Chat</button>
+    </div>
+    <script src="popup.js"></script>
+  </body>
 </html>
