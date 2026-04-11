@@ -1,37 +1,51 @@
-<!DOCTYPE html>
+<!doctype html>
 <html lang="en">
-<head>
-  <meta charset="UTF-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Bropilot</title>
-  <link rel="stylesheet" href="popup.css" />
-  <link rel="preconnect" href="https://fonts.googleapis.com">
-  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-  <link href="https://fonts.googleapis.com/css2?family=Inter:ital,opsz,wght@0,14..32,100..900;1,14..32,100..900&display=swap" rel="stylesheet">
-</head>
-<body>
-  <div class="container">
-    <header>
-      <img src="icons/icon48.png" alt="Bropilot icon" class="logo" />
-      <h1>Bropilot</h1>
-    </header>
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Bropilot</title>
+    <link rel="stylesheet" href="popup.css" />
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Inter:ital,opsz,wght@0,14..32,100..900;1,14..32,100..900&display=swap"
+      rel="stylesheet"
+    />
+  </head>
+  <body>
+    <div class="container">
+      <header>
+        <img src="icons/bropiloticon.png" alt="Bropilot icon" class="logo" />
+        <h1>Bropilot</h1>
+      </header>
 
-    <div class="status" id="status">Press to speak</div>
+      <div class="status" id="status">Type or dictate a message</div>
 
-    <button id="micBtn" class="mic-btn" aria-label="Start microphone">
-      <svg class="mic-icon" viewBox="0 0 24 24" fill="currentColor" xmlns="http://www.w3.org/2000/svg">
-        <path d="M12 1a4 4 0 0 1 4 4v6a4 4 0 0 1-8 0V5a4 4 0 0 1 4-4zm0 2a2 2 0 0 0-2 2v6a2 2 0 1 0 4 0V5a2 2 0 0 0-2-2z"/>
-        <path d="M7 11a1 1 0 0 1 1 1 4 4 0 0 0 8 0 1 1 0 1 1 2 0 6 6 0 0 1-5 5.92V20h2a1 1 0 1 1 0 2H9a1 1 0 1 1 0-2h2v-2.08A6 6 0 0 1 6 12a1 1 0 0 1 1-1z"/>
-      </svg>
-    </button>
+      <div class="chat-box" id="chatBox">
+        <div class="message bot">
+          I can chat, scroll to text, and click matching buttons or links on
+          this page.
+        </div>
+      </div>
 
-    <div class="transcript-box" id="transcriptBox">
-      <p class="interim" id="interim"></p>
-      <p class="final" id="final"></p>
+      <div class="composer">
+        <textarea
+          id="messageInput"
+          rows="3"
+          placeholder="Ask about this page or give a command..."
+        ></textarea>
+        <div class="composer-actions">
+          <button id="micBtn" class="mic-btn" aria-label="Start dictation">
+            Dictate
+          </button>
+          <button id="sendBtn" class="send-btn" aria-label="Send message">
+            Send
+          </button>
+        </div>
+      </div>
+
+      <button id="clearBtn" class="clear-btn">Clear Chat</button>
     </div>
-
-    <button id="clearBtn" class="clear-btn">Clear Messages</button>
-  </div>
-  <script src="popup.js"></script>
-</body>
+    <script src="popup.js"></script>
+  </body>
 </html>

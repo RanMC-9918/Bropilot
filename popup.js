@@ -2,97 +2,213 @@
   "use strict";
 
   const micBtn = document.getElementById("micBtn");
+  const sendBtn = document.getElementById("sendBtn");
   const statusEl = document.getElementById("status");
-  const interimEl = document.getElementById("interim");
-  const finalEl = document.getElementById("final");
+  const chatBox = document.getElementById("chatBox");
+  const messageInput = document.getElementById("messageInput");
   const clearBtn = document.getElementById("clearBtn");
 
-  const urlParams = new URLSearchParams(window.location.search);
-  const isRequestingMic = urlParams.get("request_mic") === "1";
+  const DICTATION_IDLE_MS = 5000;
 
-  if (isRequestingMic) {
-    statusEl.textContent = "Click icon to grant mic access";
-  }
-
-  // Check for browser support
   const SpeechRecognition =
     window.SpeechRecognition || window.webkitSpeechRecognition;
+  const hasSpeech = Boolean(SpeechRecognition);
+  const recognition = hasSpeech ? new SpeechRecognition() : null;
 
-  if (!SpeechRecognition) {
-    statusEl.textContent = "Speech recognition is not supported in this browser.";
-    micBtn.disabled = true;
-    return;
+  if (recognition) {
+    recognition.continuous = true;
+    recognition.interimResults = true;
+    recognition.lang = "en-US";
   }
 
-  const recognition = new SpeechRecognition();
-  recognition.continuous = true;
-  recognition.interimResults = true;
-  recognition.lang = "en-US";
-
   let isListening = false;
-  let finalTranscript = [];
+  let dictationIdleTimer = null;
+
+  async function requestMicrophoneAccess() {
+    const constraints = {
+      audio: {
+        echoCancellation: true,
+        noiseSuppression: true,
+        autoGainControl: true,
+      },
+      video: false,
+    };
+
+    if (
+      navigator.mediaDevices &&
+      typeof navigator.mediaDevices.getUserMedia === "function"
+    ) {
+      const stream = await navigator.mediaDevices.getUserMedia(constraints);
+      stream.getTracks().forEach((track) => track.stop());
+      return true;
+    }
+
+    const legacyGetUserMedia =
+      navigator.getUserMedia ||
+      navigator.webkitGetUserMedia ||
+      navigator.mozGetUserMedia;
+
+    if (!legacyGetUserMedia) {
+      throw new Error("This browser does not support microphone capture APIs.");
+    }
+
+    await new Promise((resolve, reject) => {
+      legacyGetUserMedia.call(navigator, constraints, resolve, reject);
+    });
+
+    return true;
+  }
+
+  function setStatus(text) {
+    statusEl.textContent = text;
+  }
+
+  function toMessageClass(role) {
+    if (role === "user") return "user";
+    if (role === "bot") return "bot";
+    if (role === "tool") return "tool";
+    return "system";
+  }
+
+  function renderHistory(history) {
+    chatBox.innerHTML = "";
+
+    history.forEach((item) => {
+      const node = document.createElement("div");
+      node.className = `message ${toMessageClass(item.role)}`;
+      node.textContent = item.text;
+      chatBox.appendChild(node);
+    });
+
+    chatBox.scrollTop = chatBox.scrollHeight;
+  }
+
+  async function loadState() {
+    const data = await chrome.storage.local.get([
+      "chatHistory",
+      "pendingRequest",
+    ]);
+    const history = Array.isArray(data.chatHistory) ? data.chatHistory : [];
+    const pending = data.pendingRequest || null;
+
+    renderHistory(history);
+
+    if (pending) {
+      setStatus("Assistant is working in background...");
+      sendBtn.disabled = true;
+    } else {
+      setStatus(
+        isListening ? "Dictating... auto-send after 5s silence" : "Ready",
+      );
+      sendBtn.disabled = false;
+    }
+
+    if (!history.length) {
+      setStatus("Ready");
+    }
+  }
+
+  async function getActiveTabId() {
+    const tabs = await chrome.tabs.query({ active: true, currentWindow: true });
+    return tabs[0]?.id;
+  }
+
+  function resetDictationIdleTimer() {
+    clearTimeout(dictationIdleTimer);
+    dictationIdleTimer = setTimeout(() => {
+      if (!isListening) return;
+      const text = messageInput.value.trim();
+      if (!text) return;
+      stopListening();
+      sendCurrentMessage("dictation");
+    }, DICTATION_IDLE_MS);
+  }
+
+  async function sendCurrentMessage(source) {
+    const text = messageInput.value.trim();
+    if (!text) return;
+
+    const tabId = await getActiveTabId();
+    if (!tabId) {
+      setStatus("No active tab found.");
+      return;
+    }
+
+    messageInput.value = "";
+    setStatus(
+      source === "dictation" ? "Sending dictated message..." : "Sending...",
+    );
+
+    try {
+      await chrome.runtime.sendMessage({
+        type: "process_message",
+        requestId: `${Date.now()}`,
+        text,
+        source,
+        tabId,
+      });
+      setStatus("Assistant is working in background...");
+      sendBtn.disabled = true;
+      await loadState();
+    } catch (error) {
+      setStatus(`Failed to start request: ${error.message}`);
+    }
+  }
 
   async function startListening() {
+    if (!recognition) return;
+
     try {
-      const perm = await navigator.permissions.query({ name: 'microphone' });
-      if (perm.state !== 'granted') {
-        if (isRequestingMic) {
-          try {
-            const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-            stream.getTracks().forEach(track => track.stop());
-            statusEl.textContent = "Access granted! You can close this tab.";
-            statusEl.style.color = "#99f0ff";
-            micBtn.style.display = "none";
-          } catch (e) {
-            statusEl.textContent = "Access denied. Please check site settings.";
-          }
-          return;
-        } else {
-          statusEl.textContent = "Opening tab for mic access...";
-          chrome.tabs.create({ url: chrome.runtime.getURL("popup.html?request_mic=1") });
-          return;
-        }
-      }
+      setStatus("Requesting microphone access...");
+      await requestMicrophoneAccess();
     } catch (err) {
-      if (isRequestingMic) {
+      const message = String(err?.message || err || "").toLowerCase();
+      const blocked =
+        message.includes("permission") ||
+        message.includes("denied") ||
+        message.includes("notallowed") ||
+        message.includes("not allowed");
+
+      if (blocked) {
+        setStatus("Mic prompt blocked here. Opening permission page...");
         try {
-          const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-          stream.getTracks().forEach(track => track.stop());
-          statusEl.textContent = "Access granted! You can close this tab.";
-          statusEl.style.color = "#99f0ff";
-          micBtn.style.display = "none";
-        } catch (e) {
-          statusEl.textContent = "Access denied. Please check site settings.";
+          chrome.runtime.openOptionsPage();
+        } catch (_) {
+          chrome.tabs.create({ url: chrome.runtime.getURL("options.html") });
         }
-        return;
       } else {
-        statusEl.textContent = "Opening tab for mic access...";
-        chrome.tabs.create({ url: chrome.runtime.getURL("popup.html?request_mic=1") });
-        return;
+        setStatus("Microphone is unavailable on this browser/device.");
       }
+      return;
     }
 
     try {
       recognition.start();
-    } catch (e) {
-      // Ignore if already started
+    } catch (_e) {
+      return;
     }
+
     isListening = true;
     micBtn.classList.add("active");
-    micBtn.setAttribute("aria-label", "Stop microphone");
-    statusEl.textContent = "Listening…";
+    micBtn.setAttribute("aria-label", "Stop dictation");
+    micBtn.textContent = "Listening...";
+    setStatus("Dictating... auto-send after 5s silence");
+    resetDictationIdleTimer();
   }
 
   function stopListening() {
+    if (!recognition) return;
     recognition.stop();
     isListening = false;
     micBtn.classList.remove("active");
-    micBtn.setAttribute("aria-label", "Start microphone");
-    statusEl.textContent = "Microphone off";
-    interimEl.textContent = "";
+    micBtn.setAttribute("aria-label", "Start dictation");
+    micBtn.textContent = "Dictate";
+    clearTimeout(dictationIdleTimer);
+    setStatus("Dictation off");
   }
 
-  micBtn.addEventListener("click", function () {
+  micBtn.addEventListener("click", () => {
+    if (!hasSpeech) return;
     if (isListening) {
       stopListening();
     } else {
@@ -100,76 +216,81 @@
     }
   });
 
-  clearBtn.addEventListener("click", function () {
-    finalTranscript = [];
-    finalEl.textContent = "";
-    interimEl.textContent = "";
+  sendBtn.addEventListener("click", () => {
+    sendCurrentMessage("typed");
   });
 
-  recognition.addEventListener("result", function (event) {
-    let interimTranscript = "";
+  messageInput.addEventListener("keydown", (event) => {
+    if (event.key === "Enter" && !event.shiftKey) {
+      event.preventDefault();
+      sendCurrentMessage("typed");
+    }
+  });
 
-    for (let i = event.resultIndex; i < event.results.length; i++) {
-      const transcript = event.results[i][0].transcript;
-      if (event.results[i].isFinal) {
-        finalTranscript.push(transcript);
-        handleResult(finalTranscript[finalTranscript.length - 1]);
-      } else {
-        interimTranscript += transcript;
+  clearBtn.addEventListener("click", async () => {
+    try {
+      await chrome.runtime.sendMessage({ type: "clear_history" });
+      await loadState();
+      messageInput.value = "";
+      setStatus("Chat cleared");
+    } catch (error) {
+      setStatus(`Failed to clear chat: ${error.message}`);
+    }
+  });
+
+  if (recognition) {
+    recognition.addEventListener("result", (event) => {
+      let interim = "";
+
+      for (let i = event.resultIndex; i < event.results.length; i += 1) {
+        const transcript = event.results[i][0].transcript.trim();
+        if (!transcript) continue;
+
+        if (event.results[i].isFinal) {
+          messageInput.value = `${messageInput.value} ${transcript}`.trim();
+          resetDictationIdleTimer();
+        } else {
+          interim += `${transcript} `;
+        }
       }
-    }
 
-    finalEl.textContent = finalTranscript.join("\n");
-    interimEl.textContent = interimTranscript;
-    
-    // Auto-scroll to the bottom of the transcript box
-    const box = document.querySelector(".transcript-box");
-    box.scrollTop = box.scrollHeight;
-    
-  });
+      if (interim.trim()) {
+        setStatus(`Dictating: ${interim.trim()}`);
+        resetDictationIdleTimer();
+      }
+    });
 
-  function command(c, x, func){
-    while(x.indexOf(c) != -1){
-      x = x.substring(x.indexOf+c.length+1);
-    }
-    func(x);
-  }
+    recognition.addEventListener("error", (event) => {
+      if (event.error === "aborted") return;
+      const messages = {
+        "not-allowed":
+          "Microphone access denied. Please allow microphone permission.",
+        "no-speech": "No speech detected. Keep speaking.",
+        network: "Network error. Check your connection.",
+      };
+      stopListening();
+      setStatus(messages[event.error] || `Error: ${event.error}`);
+    });
 
-  function handleResult(result){
-    let firstPart = result;
-    
-     switch(firstPart){
-       case "alert":
-         command("alert", result, alert);
-         break;
-      case "alerts":
-         command("alert", result, alert);
-         break;
-       default:
-         break;
-     }
-  }
-
-  recognition.addEventListener("error", function (event) {
-    if (event.error === "aborted") return;
-    const messages = {
-      "not-allowed": "Microphone access denied. Please allow microphone permission.",
-      "no-speech": "No speech detected. Try again.",
-      network: "Network error. Check your connection.",
-    };
-    const msg = messages[event.error] || "Error: " + event.error;
-    stopListening();
-    statusEl.textContent = msg;
-  });
-
-  recognition.addEventListener("end", function () {
-    // If the user didn't manually stop, restart to keep continuous mode alive
-    if (isListening) {
+    recognition.addEventListener("end", () => {
+      if (!isListening) return;
       try {
         recognition.start();
-      } catch (e) {
-        // Recognition may not be ready to restart yet; ignore and wait for next end event
+      } catch (_e) {
+        // Ignore transient restart errors while dictation remains active.
       }
+    });
+  } else {
+    micBtn.disabled = true;
+    setStatus("Dictation unavailable in this browser. Typing still works.");
+  }
+
+  chrome.storage.onChanged.addListener((changes, area) => {
+    if (area !== "local") return;
+    if (changes.chatHistory || changes.pendingRequest) {
+      loadState();
     }
   });
+
+  loadState();
 })();
