@@ -43,17 +43,20 @@ GOOGLE_API_KEY = os.getenv("GOOGLE_API_KEY")
 GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemma-4-26b-a4b-it")
 BACKUP_GEMINI_MODEL = os.getenv("BACKUP_GEMINI_MODEL", "gemma-4-31b-it")
 GEMINI_TEMPERATURE = float(os.getenv("GEMINI_TEMPERATURE", "0"))
+THINKING_CONFIG = {"thinking_config": {"thinking_budget": 0}}
 
 primary_llm = ChatGoogleGenerativeAI(
     model=GEMINI_MODEL,
     google_api_key=GOOGLE_API_KEY,
     temperature=GEMINI_TEMPERATURE,
+    model_kwargs=THINKING_CONFIG,
 )
 
 backup_llm = ChatGoogleGenerativeAI(
     model=BACKUP_GEMINI_MODEL,
     google_api_key=GOOGLE_API_KEY,
     temperature=GEMINI_TEMPERATURE,
+    model_kwargs=THINKING_CONFIG,
 )
 
 SYSTEM_PROMPT = (
