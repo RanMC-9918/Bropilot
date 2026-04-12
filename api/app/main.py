@@ -69,6 +69,7 @@ SYSTEM_PROMPT = (
 WS_SYSTEM_PROMPT = (
     "You are an interactive browser automation agent.\n"
     "Return exactly one tool call for the immediate next step when an action is needed.\n"
+    "Call getPageHtml when you need fresh DOM context before choosing selectors.\n"
     "Use only provided tools.\n"
     "If the task is complete or blocked, respond in plain text with a short completion or blocker note and no tool call."
 )
@@ -190,7 +191,7 @@ def websocket_iteration_prompt(
         )
 
     feedback_text = "\n".join(feedback_lines) if feedback_lines else "none"
-    html_text = latest_html or ""
+    html_text = latest_html or "[none]"
     return (
         f"User request:\n{query}\n\n"
         f"Current page url:\n{latest_url}\n\n"
@@ -361,7 +362,7 @@ async def websocket_root(websocket: WebSocket):
 
             if result_message.current_url:
                 latest_url = result_message.current_url
-            if result_message.html is not None:
+            if tool_name == "getPageHtml" and result_message.html is not None:
                 latest_html = result_message.html
 
             feedback_log.append(

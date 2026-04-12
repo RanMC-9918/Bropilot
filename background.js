@@ -3,7 +3,7 @@
 importScripts("tools.js");
 
 const API_URL = "https://api.sarveshs.dev";
-const MAX_HTML_CONTEXT = 262144;
+const MAX_HTML_CONTEXT = 60000;
 const HISTORY_LIMIT = 120;
 const WS_CONNECT_TIMEOUT_MS = 10000;
 const WS_EVENT_TIMEOUT_MS = 50000;
@@ -88,20 +88,29 @@ function normalizeActions(responseData) {
   return [];
 }
 
-async function getPageContext(tabId) {
+async function getPageContext(tabId, maxChars = MAX_HTML_CONTEXT) {
   const [{ result }] = await chrome.scripting.executeScript({
     target: { tabId },
-    func: (maxChars) => {
-      const html = document.documentElement
-        ? document.documentElement.outerHTML
-        : "";
+    func: (maxCaptureChars) => {
+      let html = "";
+      if (maxCaptureChars > 0) {
+        const raw = document.documentElement
+          ? document.documentElement.outerHTML
+          : "";
+        html = raw
+          .replace(/<script[\s\S]*?<\/script>/gi, "")
+          .replace(/<style[\s\S]*?<\/style>/gi, "")
+          .replace(/\s+/g, " ")
+          .trim()
+          .slice(0, maxCaptureChars);
+      }
       return {
-        html: html.slice(0, maxChars),
+        html,
         url: location.href,
         title: document.title || "",
       };
     },
-    args: [MAX_HTML_CONTEXT],
+    args: [maxChars],
   });
 
   return {
@@ -269,7 +278,7 @@ async function processMessageViaWebSocket(id, text, tabId, context) {
       request_id: id,
       query: text,
       current_url: context.pageUrl,
-      html: context.pageHtml,
+      html: null,
     });
 
     for (let eventCount = 0; eventCount < WS_MAX_EVENTS; eventCount += 1) {
@@ -309,11 +318,17 @@ async function processMessageViaWebSocket(id, text, tabId, context) {
         let toolText = "";
         let success = false;
         let latestContext = context;
+        const wantsHtml = action.command === "get_page_html";
 
         try {
           toolText = await BropilotTools.executeAction(tabId, action);
           success = toolSucceeded(action, toolText);
-          latestContext = await getPageContext(tabId);
+          latestContext = await getPageContext(
+            tabId,
+            wantsHtml
+              ? Number(action.commandInfo?.maxChars) || MAX_HTML_CONTEXT
+              : 0,
+          );
         } catch (error) {
           toolText = `Tool execution failed: ${toErrorMessage(error)}`;
           success = false;
@@ -334,7 +349,7 @@ async function processMessageViaWebSocket(id, text, tabId, context) {
           success,
           result_text: toolText,
           current_url: latestContext.pageUrl,
-          html: latestContext.pageHtml,
+          html: wantsHtml ? latestContext.pageHtml : undefined,
         });
 
         stepCount += 1;
@@ -398,7 +413,7 @@ async function processMessage({ requestId, text, source, tabId }) {
   });
 
   try {
-    const context = await getPageContext(tabId);
+    const context = await getPageContext(tabId, 0);
 
     try {
       await processMessageViaWebSocket(id, text, tabId, context);
@@ -409,7 +424,8 @@ async function processMessage({ requestId, text, source, tabId }) {
         text: `WebSocket unavailable, using HTTP fallback: ${toErrorMessage(wsError)}`,
         timestamp: nowIso(),
       });
-      await processMessageViaHttp(id, text, tabId, context);
+      const httpContext = await getPageContext(tabId, MAX_HTML_CONTEXT);
+      await processMessageViaHttp(id, text, tabId, httpContext);
     }
   } catch (error) {
     console.error("[Bropilot] processMessage failed", error);
