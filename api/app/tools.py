@@ -1,7 +1,9 @@
 
-from langchain_core.tools import tool
-from .schemas import Output
 from typing import Union
+
+from langchain_core.tools import tool
+
+from .schemas import Output
 
 
 def _build_output(command: str, info: dict) -> Output:
@@ -11,6 +13,7 @@ def _build_output(command: str, info: dict) -> Output:
         "timeTaken": 0,
         "error": None,
     }
+
 
 @tool
 def openNewTab(url: str = "about:blank") -> Output:
@@ -100,7 +103,30 @@ def switchToTab(index: Union[int, str]) -> Output:
 
 
 @tool
-def wait(seconds: Union[int, str] = 1) -> Output:
-    """Wait seconds."""
-    seconds = int(seconds) if isinstance(seconds, str) else seconds
-    return _build_output("wait", {"seconds": seconds})
+def wait(milliseconds: Union[int, str] = 1000) -> Output:
+    """Wait milliseconds."""
+    milliseconds = int(milliseconds) if isinstance(milliseconds, str) else milliseconds
+    return _build_output("wait", {"milliseconds": milliseconds})
+
+
+@tool
+def scrollToWord(regex: str) -> Output:
+    """Scroll to the first word matching a regex."""
+    return _build_output("scroll_to_word", {"regex": regex})
+
+
+ALL_TOOLS = [
+    openNewTab,
+    navigateCurrentTab,
+    searchWeb,
+    clickElement,
+    typeIntoElement,
+    scrollPage,
+    goBack,
+    goForward,
+    refreshPage,
+    closeCurrentTab,
+    switchToTab,
+    scrollToWord,
+    wait,
+]
