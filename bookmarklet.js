@@ -162,10 +162,13 @@
     const targetAttr = linkEl
       ? (linkEl.getAttribute("target") || "").toLowerCase()
       : "";
+    const hrefLower = href.toLowerCase();
     const isNavigatingLink = Boolean(
       href &&
         href !== "#" &&
-        !href.toLowerCase().startsWith("javascript:"),
+        !hrefLower.startsWith("javascript:") &&
+        !hrefLower.startsWith("data:") &&
+        !hrefLower.startsWith("vbscript:"),
     );
     target.scrollIntoView({ behavior: "smooth", block: "center" });
     target.click();
@@ -360,7 +363,8 @@
     }
 
     if (action.command === "error") {
-      return "Tool error: " + JSON.stringify(action.commandInfo != null ? action.commandInfo : {});
+      const info = JSON.stringify(action.commandInfo != null ? action.commandInfo : {});
+      return "Tool error: " + info.slice(0, 200);
     }
 
     return "Unsupported tool action: " + action.command;
@@ -472,10 +476,16 @@
         onUpdate();
       }
     } catch (error) {
+      const msg = error.message || String(error);
+      const friendly = msg.includes("API error:")
+        ? "The assistant API returned an error. Please try again."
+        : msg.includes("Failed to fetch") || msg.includes("NetworkError")
+          ? "Network error — check your internet connection and try again."
+          : "Failed to process request: " + msg;
       appendHistory({
         id: id + ":error",
         role: "bot",
-        text: "Failed to process request: " + error.message,
+        text: friendly,
         timestamp: nowIso(),
       });
       onUpdate();
@@ -670,7 +680,7 @@
     micBtn.classList.add("active");
     micBtn.setAttribute("aria-label", "Stop dictation");
     micBtn.textContent = "Listening...";
-    setStatus("Dictating... auto-send after 5s silence");
+    setStatus("Dictating... auto-send after " + Math.round(DICTATION_IDLE_MS / 1000) + "s silence");
     resetDictationIdleTimer();
   }
 
@@ -698,7 +708,7 @@
       const messages = {
         "not-allowed": "Microphone access denied.",
         "no-speech": "No speech detected. Keep speaking.",
-        network: "Network error. Check your connection.",
+        "network": "Network error. Check your connection.",
       };
       stopListening();
       setStatus(messages[event.error] || "Error: " + event.error);
