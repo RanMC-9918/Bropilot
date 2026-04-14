@@ -363,8 +363,8 @@
     }
 
     if (action.command === "error") {
-      const info = JSON.stringify(action.commandInfo != null ? action.commandInfo : {});
-      return "Tool error: " + info.slice(0, 200);
+      const errorInfo = JSON.stringify(action.commandInfo != null ? action.commandInfo : {});
+      return "Tool error: " + errorInfo.slice(0, 200);
     }
 
     return "Unsupported tool action: " + action.command;
@@ -680,7 +680,7 @@
     micBtn.classList.add("active");
     micBtn.setAttribute("aria-label", "Stop dictation");
     micBtn.textContent = "Listening...";
-    setStatus("Dictating... auto-send after " + Math.round(DICTATION_IDLE_MS / 1000) + "s silence");
+    setStatus("Dictating... auto-send after " + Math.round(DICTATION_IDLE_MS / 1000) + " seconds silence");
     resetDictationIdleTimer();
   }
 
