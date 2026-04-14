@@ -1,22 +1,4 @@
-/**
- * Bropilot Bookmarklet — iOS Safari compatible
- *
- * HOW TO USE:
- *   1. Copy the entire content of this file (the IIFE below).
- *   2. Create a new bookmark in Safari on iOS.
- *   3. Edit the bookmark URL and replace it with:
- *        javascript:<paste the IIFE here>
- *      (The URL must start with "javascript:" followed immediately by the code.)
- *   4. Tap the bookmark on any page to open the Bropilot overlay.
- *      Tapping it again while the overlay is visible will hide it.
- *
- * FEATURES:
- *   - Floating chat overlay injected into the current page.
- *   - Dictation via the Web Speech API (webkitSpeechRecognition on iOS/Safari).
- *   - Scroll-to-word, click, type, navigate, and more — all run directly in the
- *     page without any extension APIs.
- *   - Chat history persisted in localStorage across bookmarklet activations.
- */
+
 (function () {
   "use strict";
 
@@ -27,7 +9,7 @@
     return;
   }
 
-  const API_URL = "https://api.sarveshs.dev";
+  const API_URL = "https://12e24a8e-83b6-42a7-a2fe-00dd99bd55ea-00-3fs2ghpg0s80h.spock.replit.dev";
   const MAX_HTML_CONTEXT = 262144;
   const HISTORY_LIMIT = 120;
   const STORAGE_KEY = "bropilot_chatHistory";
