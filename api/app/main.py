@@ -1,4 +1,6 @@
 import asyncio
+import json
+import re
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from dotenv import load_dotenv
 import os
@@ -24,6 +26,8 @@ OLLAMA_MODEL = os.getenv("OLLAMA_MODEL", "llama3.1")
 OLLAMA_BASE_URL = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434")
 WS_MAX_STEPS = int(os.getenv("WS_MAX_STEPS", "8"))
 WS_STEP_TIMEOUT_SECONDS = int(os.getenv("WS_STEP_TIMEOUT_SECONDS", "45"))
+WS_DONE_CHECK_RETRIES = int(os.getenv("WS_DONE_CHECK_RETRIES", "2"))
+WS_STAGNATION_STEPS = int(os.getenv("WS_STAGNATION_STEPS", "3"))
 
 if PROVIDER not in {"google", "ollama"}:
     raise RuntimeError("PROVIDER must be either 'google' or 'ollama'.")
@@ -72,6 +76,13 @@ WS_SYSTEM_PROMPT = (
     "Call getPageHtml when you need fresh DOM context before choosing selectors.\n"
     "Use only provided tools.\n"
     "If the task is complete or blocked, respond in plain text with a short completion or blocker note and no tool call."
+)
+
+DONE_CHECK_SYSTEM_PROMPT = (
+    "You validate task completion for a browser automation run.\n"
+    "Return ONLY JSON with keys: status and reason.\n"
+    "status must be one of: done, not_done, blocked.\n"
+    "reason must be a short sentence."
 )
 
 
@@ -218,6 +229,99 @@ def pick_tool_name_and_args(tool_call: Any) -> tuple[Optional[str], dict[str, An
     return name, args
 
 
+def parse_done_check_payload(text: str) -> Optional[dict[str, Any]]:
+    candidate = text.strip()
+    if not candidate:
+        return None
+
+    try:
+        data = json.loads(candidate)
+        if isinstance(data, dict):
+            return data
+    except json.JSONDecodeError:
+        pass
+
+    fenced = re.search(r"```(?:json)?\s*(.*?)\s*```", candidate, re.DOTALL)
+    if fenced:
+        try:
+            data = json.loads(fenced.group(1))
+            if isinstance(data, dict):
+                return data
+        except json.JSONDecodeError:
+            pass
+
+    first_obj = re.search(r"\{[\s\S]*\}", candidate)
+    if first_obj:
+        try:
+            data = json.loads(first_obj.group(0))
+            if isinstance(data, dict):
+                return data
+        except json.JSONDecodeError:
+            pass
+
+    return None
+
+
+def done_check_prompt(
+    query: str,
+    latest_url: str,
+    latest_html: Optional[str],
+    feedback_log: list[dict[str, Any]],
+) -> str:
+    feedback_lines: list[str] = []
+    for item in feedback_log[-8:]:
+        feedback_lines.append(
+            f"step={item.get('step')} tool={item.get('tool')} success={item.get('success')} note={item.get('note')}"
+        )
+
+    feedback_text = "\n".join(feedback_lines) if feedback_lines else "none"
+    html_hint = latest_html if latest_html else "[none]"
+
+    return (
+        f"User goal:\n{query}\n\n"
+        f"Current url:\n{latest_url}\n\n"
+        f"Recent execution feedback:\n{feedback_text}\n\n"
+        f"Current html context:\n{html_hint}\n\n"
+        "Decide if the goal is completed."
+    )
+
+
+def validate_task_completion(
+    query: str,
+    latest_url: str,
+    latest_html: Optional[str],
+    feedback_log: list[dict[str, Any]],
+) -> tuple[str, str]:
+    for _ in range(WS_DONE_CHECK_RETRIES):
+        messages = [
+            SystemMessage(content=DONE_CHECK_SYSTEM_PROMPT),
+            HumanMessage(
+                content=done_check_prompt(
+                    query=query,
+                    latest_url=latest_url,
+                    latest_html=latest_html,
+                    feedback_log=feedback_log,
+                )
+            ),
+        ]
+
+        response = invoke_with_fallback(messages)
+        tool_calls = list(getattr(response, "tool_calls", []) or [])
+        if tool_calls:
+            return "not_done", "Completion check requested another action"
+
+        parsed = parse_done_check_payload(response_text(response))
+        if not parsed:
+            continue
+
+        status = str(parsed.get("status", "")).strip().lower()
+        reason = str(parsed.get("reason", "")).strip() or "No reason provided"
+        if status in {"done", "not_done", "blocked"}:
+            return status, reason
+
+    return "blocked", "Unable to validate completion reliably"
+
+
 app = FastAPI()
 
 
@@ -255,6 +359,7 @@ async def websocket_root(websocket: WebSocket):
             return
 
         feedback_log: list[dict[str, Any]] = []
+        stagnation_steps = 0
 
         for step_index in range(WS_MAX_STEPS):
             await websocket.send_json(
@@ -282,16 +387,44 @@ async def websocket_root(websocket: WebSocket):
             tool_calls = list(getattr(response, "tool_calls", []) or [])
 
             if not tool_calls:
-                await websocket.send_json(
+                status, reason = validate_task_completion(
+                    query=query,
+                    latest_url=latest_url,
+                    latest_html=latest_html,
+                    feedback_log=feedback_log,
+                )
+                if status == "done":
+                    await websocket.send_json(
+                        {
+                            "type": "complete",
+                            "request_id": request_id,
+                            "total_steps": step_index,
+                            "time_taken": elapsed_seconds(start_time),
+                            "message": reason,
+                        }
+                    )
+                    return
+
+                if status == "blocked":
+                    await websocket.send_json(
+                        {
+                            "type": "error",
+                            "request_id": request_id,
+                            "step_index": step_index,
+                            "error": f"Task blocked: {reason}",
+                        }
+                    )
+                    return
+
+                feedback_log.append(
                     {
-                        "type": "complete",
-                        "request_id": request_id,
-                        "total_steps": step_index,
-                        "time_taken": elapsed_seconds(start_time),
-                        "message": response_text(response) or "Task complete",
+                        "step": step_index,
+                        "tool": "done_check",
+                        "success": False,
+                        "note": f"Continuation required: {reason}",
                     }
                 )
-                return
+                continue
 
             tool_name, args = pick_tool_name_and_args(tool_calls[0])
             if tool_name is None:
@@ -360,10 +493,33 @@ async def websocket_root(websocket: WebSocket):
                 )
                 return
 
+            previous_url = latest_url
             if result_message.current_url:
                 latest_url = result_message.current_url
             if tool_name == "getPageHtml" and result_message.html is not None:
                 latest_html = result_message.html
+
+            made_progress = bool(result_message.success)
+            if latest_url != previous_url:
+                made_progress = True
+            if tool_name == "getPageHtml":
+                made_progress = False
+
+            if made_progress:
+                stagnation_steps = 0
+            else:
+                stagnation_steps += 1
+
+            if stagnation_steps >= WS_STAGNATION_STEPS:
+                await websocket.send_json(
+                    {
+                        "type": "error",
+                        "request_id": request_id,
+                        "step_index": step_index,
+                        "error": "Task blocked: no progress across recent steps",
+                    }
+                )
+                return
 
             feedback_log.append(
                 {
