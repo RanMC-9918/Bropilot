@@ -1,0 +1,674 @@
+(function () {
+  "use strict";
+
+  if (document.getElementById("bropilot-root")) return;
+
+  var API_URL = "https://api.sarveshs.dev";
+  var MAX_HTML_CONTEXT = 262144;
+  var DICTATION_IDLE_MS = 5000;
+
+  /* ── state ── */
+  var chatHistory = [];
+  var pendingRequest = null;
+  var isListening = false;
+  var dictationIdleTimer = null;
+
+  /* ── speech recognition ── */
+  var SpeechRecognition =
+    window.SpeechRecognition || window.webkitSpeechRecognition;
+  var hasSpeech = Boolean(SpeechRecognition);
+  var recognition = hasSpeech ? new SpeechRecognition() : null;
+  if (recognition) {
+    recognition.continuous = true;
+    recognition.interimResults = true;
+    recognition.lang = "en-US";
+  }
+
+  /* ── inject styles ── */
+  var style = document.createElement("style");
+  style.id = "bropilot-style";
+  style.textContent =
+    '#bropilot-root *{box-sizing:border-box;margin:0;padding:0}' +
+    '#bropilot-root{position:fixed;bottom:20px;right:20px;z-index:2147483647;' +
+    'font-family:"Inter",system-ui,sans-serif;width:380px;height:540px;' +
+    'background:#171f31;border-radius:16px;box-shadow:0 8px 32px rgba(0,0,0,.45);' +
+    'display:flex;flex-direction:column;overflow:hidden;resize:both;min-width:300px;min-height:400px}' +
+    '#bropilot-root.bropilot-collapsed{height:auto;min-height:unset;resize:none}' +
+    '#bropilot-root.bropilot-collapsed .bropilot-body{display:none}' +
+    '.bropilot-header{display:flex;align-items:center;gap:10px;padding:12px 16px;' +
+    'cursor:grab;user-select:none;border-bottom:1px solid #2a3657;flex-shrink:0}' +
+    '.bropilot-header h1{font-size:18px;font-weight:700;color:#b5cfff;letter-spacing:1px;flex:1}' +
+    '.bropilot-header button{background:none;border:none;color:#8690ad;font-size:18px;cursor:pointer;padding:2px 6px;line-height:1}' +
+    '.bropilot-header button:hover{color:#b5cfff}' +
+    '.bropilot-body{display:flex;flex-direction:column;flex:1;padding:0 14px 14px;gap:10px;overflow:hidden}' +
+    '.bropilot-status{font-size:13px;color:#8690ad;min-height:16px;text-align:left;padding-top:10px;flex-shrink:0}' +
+    '.bropilot-chat{flex:1;background:#1a2338;border:1px solid #2a3657;border-radius:14px;' +
+    'box-shadow:0 7px 13px 9px rgba(12,13,20,.25);padding:10px;overflow-y:auto;' +
+    'display:flex;flex-direction:column;gap:7px}' +
+    '.bropilot-msg{max-width:92%;font-size:13.5px;line-height:1.35;border-radius:11px;' +
+    'padding:7px 10px;word-break:break-word;white-space:pre-wrap;animation:bropilotFade .12s ease-out forwards}' +
+    '.bropilot-msg.user{align-self:flex-end;background:#33488c;color:#e7edff}' +
+    '.bropilot-msg.bot{align-self:flex-start;background:#222f4f;color:#cad7ff}' +
+    '.bropilot-msg.system{align-self:center;background:#29375c;color:#d6deff;font-size:12px}' +
+    '.bropilot-msg.tool{align-self:flex-start;background:#213a4f;color:#b7ecff;' +
+    'border:1px solid #2f5f80;font-size:12.5px}' +
+    '.bropilot-composer{display:flex;flex-direction:column;gap:7px;flex-shrink:0}' +
+    '.bropilot-composer textarea{width:100%;resize:none;border:1px solid #3b4a73;border-radius:11px;' +
+    'padding:9px;font:inherit;font-size:13.5px;color:#e4ebff;background:#1f2a45;outline:none}' +
+    '.bropilot-composer textarea::placeholder{color:#8d9bc2}' +
+    '.bropilot-composer textarea:focus{border-color:#6f8ef4}' +
+    '.bropilot-actions{display:flex;gap:7px}' +
+    '.bropilot-actions button{flex:1;border-radius:9px;border:none;height:36px;font-size:13px;' +
+    'font-weight:600;cursor:pointer;transition:background .2s,transform .2s,color .2s}' +
+    '.bropilot-mic{background:#2f3f6d;color:#e2e9ff}' +
+    '.bropilot-mic:hover{background:#394ca1}' +
+    '.bropilot-mic.active{background:#83c9ff;color:#0f233d}' +
+    '.bropilot-send{background:#4a69c8;color:#f3f6ff}' +
+    '.bropilot-send:hover{background:#5a79da}' +
+    '.bropilot-clear{align-self:flex-end;width:auto;min-width:82px;height:28px;padding:0 9px;' +
+    'border-radius:7px;background:transparent;border:1px solid #455278;color:#9eb0dd;' +
+    'font-size:12px;font-weight:500;cursor:pointer;transition:background .2s,color .2s}' +
+    '.bropilot-clear:hover{background:#2f3b5a;color:#dbe6ff}' +
+    '@keyframes bropilotFade{from{opacity:0;transform:translateY(2px)}to{opacity:1;transform:translateY(0)}}';
+  document.head.appendChild(style);
+
+  /* ── load Inter font ── */
+  if (!document.querySelector('link[href*="fonts.googleapis.com/css2?family=Inter"]')) {
+    var link = document.createElement("link");
+    link.rel = "stylesheet";
+    link.href = "https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap";
+    document.head.appendChild(link);
+  }
+
+  /* ── build DOM ── */
+  var root = document.createElement("div");
+  root.id = "bropilot-root";
+  root.innerHTML =
+    '<div class="bropilot-header">' +
+      '<h1>Bropilot</h1>' +
+      '<button class="bropilot-collapse-btn" title="Collapse">&#x2212;</button>' +
+      '<button class="bropilot-close-btn" title="Close">&times;</button>' +
+    '</div>' +
+    '<div class="bropilot-body">' +
+      '<div class="bropilot-status">Type or dictate a message</div>' +
+      '<div class="bropilot-chat">' +
+        '<div class="bropilot-msg bot">I can chat, scroll to text, and click matching buttons or links on this page.</div>' +
+      '</div>' +
+      '<div class="bropilot-composer">' +
+        '<textarea rows="2" placeholder="Ask about this page or give a command..."></textarea>' +
+        '<div class="bropilot-actions">' +
+          '<button class="bropilot-mic">Dictate</button>' +
+          '<button class="bropilot-send">Send</button>' +
+        '</div>' +
+      '</div>' +
+      '<button class="bropilot-clear">Clear Chat</button>' +
+    '</div>';
+  document.body.appendChild(root);
+
+  /* element refs */
+  var header = root.querySelector(".bropilot-header");
+  var collapseBtn = root.querySelector(".bropilot-collapse-btn");
+  var closeBtn = root.querySelector(".bropilot-close-btn");
+  var statusEl = root.querySelector(".bropilot-status");
+  var chatBox = root.querySelector(".bropilot-chat");
+  var messageInput = root.querySelector("textarea");
+  var micBtn = root.querySelector(".bropilot-mic");
+  var sendBtn = root.querySelector(".bropilot-send");
+  var clearBtn = root.querySelector(".bropilot-clear");
+
+  /* ── dragging ── */
+  var isDragging = false;
+  var dragOffsetX = 0;
+  var dragOffsetY = 0;
+
+  header.addEventListener("mousedown", function (e) {
+    if (e.target.tagName === "BUTTON") return;
+    isDragging = true;
+    dragOffsetX = e.clientX - root.getBoundingClientRect().left;
+    dragOffsetY = e.clientY - root.getBoundingClientRect().top;
+    header.style.cursor = "grabbing";
+    e.preventDefault();
+  });
+
+  document.addEventListener("mousemove", function (e) {
+    if (!isDragging) return;
+    var x = e.clientX - dragOffsetX;
+    var y = e.clientY - dragOffsetY;
+    root.style.left = Math.max(0, x) + "px";
+    root.style.top = Math.max(0, y) + "px";
+    root.style.right = "auto";
+    root.style.bottom = "auto";
+  });
+
+  document.addEventListener("mouseup", function () {
+    if (isDragging) {
+      isDragging = false;
+      header.style.cursor = "grab";
+    }
+  });
+
+  /* ── collapse / close ── */
+  collapseBtn.addEventListener("click", function () {
+    var collapsed = root.classList.toggle("bropilot-collapsed");
+    collapseBtn.innerHTML = collapsed ? "&#x002B;" : "&#x2212;";
+    collapseBtn.title = collapsed ? "Expand" : "Collapse";
+  });
+
+  closeBtn.addEventListener("click", function () {
+    root.remove();
+    style.remove();
+    if (recognition && isListening) {
+      recognition.stop();
+    }
+  });
+
+  /* ── helpers ── */
+  function setStatus(text) {
+    statusEl.textContent = text;
+  }
+
+  function toMessageClass(role) {
+    if (role === "user") return "user";
+    if (role === "bot") return "bot";
+    if (role === "tool") return "tool";
+    return "system";
+  }
+
+  function renderHistory() {
+    chatBox.innerHTML = "";
+    chatHistory.forEach(function (item) {
+      var node = document.createElement("div");
+      node.className = "bropilot-msg " + toMessageClass(item.role);
+      node.textContent = item.text;
+      chatBox.appendChild(node);
+    });
+    chatBox.scrollTop = chatBox.scrollHeight;
+  }
+
+  function appendHistory(item) {
+    chatHistory.push(item);
+    renderHistory();
+  }
+
+  function nowIso() {
+    return new Date().toISOString();
+  }
+
+  /* ── tool execution (runs in page context) ── */
+  function ensureString(value) {
+    return typeof value === "string" ? value : "";
+  }
+
+  function parseRegex(input) {
+    var s = String(input || "").trim();
+    if (!s) return null;
+    var slash = s.match(/^\/(.*)\/([a-z]*)$/i);
+    if (slash) {
+      try { return new RegExp(slash[1], slash[2] || "i"); } catch (_) { return null; }
+    }
+    try { return new RegExp(s, "i"); } catch (_) { return null; }
+  }
+
+  function runScrollToWord(regexText) {
+    var HIGHLIGHT_ID = "bropilot-scroll-highlight";
+    var styleId = "bropilot-scroll-style";
+
+    if (!document.getElementById(styleId)) {
+      var s = document.createElement("style");
+      s.id = styleId;
+      s.textContent =
+        "." + HIGHLIGHT_ID + "{background:#fff2a8!important;outline:2px solid #ffd33d!important;border-radius:2px;transition:background .2s ease}";
+      document.head.appendChild(s);
+    }
+
+    var regex = parseRegex(regexText);
+    if (!regex) return { ok: false, reason: "Invalid regex." };
+
+    document.querySelectorAll("." + HIGHLIGHT_ID).forEach(function (el) {
+      el.classList.remove(HIGHLIGHT_ID);
+    });
+
+    var walker = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT);
+    var node;
+    while ((node = walker.nextNode())) {
+      var text = node.nodeValue || "";
+      if (!text.trim()) continue;
+      if (!regex.test(text)) continue;
+      var parent = node.parentElement;
+      if (!parent || root.contains(parent)) continue;
+      parent.classList.add(HIGHLIGHT_ID);
+      parent.scrollIntoView({ behavior: "smooth", block: "center" });
+      return { ok: true, match: text.trim().slice(0, 120) };
+    }
+    return { ok: false, reason: "No matching text found on page." };
+  }
+
+  function runClickByRegex(regexText) {
+    var HIGHLIGHT_ID = "bropilot-click-highlight";
+    var styleId = "bropilot-click-style";
+
+    if (!document.getElementById(styleId)) {
+      var s = document.createElement("style");
+      s.id = styleId;
+      s.textContent =
+        "." + HIGHLIGHT_ID + "{box-shadow:0 0 0 3px #4de0ff inset!important;background-color:rgba(77,224,255,.14)!important;transition:background-color .2s ease}";
+      document.head.appendChild(s);
+    }
+
+    var regex = parseRegex(regexText);
+    if (!regex) return { ok: false, reason: "Invalid regex." };
+
+    document.querySelectorAll("." + HIGHLIGHT_ID).forEach(function (el) {
+      el.classList.remove(HIGHLIGHT_ID);
+    });
+
+    var candidates = Array.from(
+      document.querySelectorAll(
+        "a, button, input[type='button'], input[type='submit'], [role='button']"
+      )
+    );
+
+    for (var i = 0; i < candidates.length; i++) {
+      var el = candidates[i];
+      var text = (el.innerText || el.textContent || el.value || "").trim();
+      if (!text || !regex.test(text)) continue;
+      if (root.contains(el)) continue;
+      el.classList.add(HIGHLIGHT_ID);
+      el.scrollIntoView({ behavior: "smooth", block: "center" });
+      el.click();
+      return { ok: true, match: text.slice(0, 120) };
+    }
+    return { ok: false, reason: "No matching clickable element found." };
+  }
+
+  function runClickBySelector(selector) {
+    var target = document.querySelector(selector);
+    if (!target) return { ok: false, reason: "No element matched selector." };
+    if (root.contains(target)) return { ok: false, reason: "Cannot click Bropilot UI elements." };
+    target.scrollIntoView({ behavior: "smooth", block: "center" });
+    target.click();
+    return { ok: true };
+  }
+
+  function runTypeBySelector(selector, text, pressEnter) {
+    var target = document.querySelector(selector);
+    if (!target) return { ok: false, reason: "No element matched selector." };
+    if (root.contains(target)) return { ok: false, reason: "Cannot type into Bropilot UI elements." };
+
+    var isEditable =
+      target instanceof HTMLInputElement ||
+      target instanceof HTMLTextAreaElement ||
+      target.isContentEditable;
+    if (!isEditable) return { ok: false, reason: "Target element is not editable." };
+
+    target.focus();
+
+    if (target instanceof HTMLInputElement || target instanceof HTMLTextAreaElement) {
+      target.value = String(text != null ? text : "");
+      target.dispatchEvent(new Event("input", { bubbles: true }));
+      target.dispatchEvent(new Event("change", { bubbles: true }));
+    } else {
+      target.textContent = String(text != null ? text : "");
+      target.dispatchEvent(new Event("input", { bubbles: true }));
+    }
+
+    if (pressEnter) {
+      var keyDown = new KeyboardEvent("keydown", {
+        key: "Enter", code: "Enter", keyCode: 13, which: 13, bubbles: true,
+      });
+      var keyUp = new KeyboardEvent("keyup", {
+        key: "Enter", code: "Enter", keyCode: 13, which: 13, bubbles: true,
+      });
+      target.dispatchEvent(keyDown);
+      target.dispatchEvent(keyUp);
+
+      if (target instanceof HTMLInputElement || target instanceof HTMLTextAreaElement) {
+        var form = target.form;
+        if (form) {
+          if (typeof form.requestSubmit === "function") {
+            form.requestSubmit();
+          } else {
+            form.submit();
+          }
+        }
+      }
+    }
+    return { ok: true };
+  }
+
+  function runDirectionalScroll(direction, amount) {
+    var sign = direction === "up" ? -1 : 1;
+    var value = Number(amount) || 600;
+    window.scrollBy({ top: sign * value, left: 0, behavior: "smooth" });
+    return { ok: true, amount: value, direction: direction };
+  }
+
+  function executeAction(action) {
+    var info =
+      action && typeof action.commandInfo === "object" && action.commandInfo
+        ? action.commandInfo
+        : {};
+
+    switch (action.command) {
+      case "open_tab": {
+        var url = ensureString(info.url) || "about:blank";
+        window.open(url, "_blank");
+        return "Opened tab: " + url;
+      }
+      case "navigate": {
+        var navUrl = ensureString(info.url);
+        if (!navUrl) return "Navigate failed: url is missing.";
+        window.location.href = navUrl;
+        return "Navigated to: " + navUrl;
+      }
+      case "search_web": {
+        var query = ensureString(info.query);
+        if (!query) return "Search failed: query is missing.";
+        window.open("https://duckduckgo.com/?q=" + encodeURIComponent(query), "_blank");
+        return "Opened web search for: " + query;
+      }
+      case "click": {
+        if (typeof info.selector === "string" && info.selector.trim()) {
+          var sResult = runClickBySelector(info.selector.trim());
+          return sResult.ok
+            ? "Clicked selector: " + info.selector.trim()
+            : "Click failed: " + sResult.reason;
+        }
+        var regexText =
+          typeof action.commandInfo === "string"
+            ? action.commandInfo
+            : ensureString(info.regex);
+        if (!regexText) return "Click failed: selector or regex is missing.";
+        var rResult = runClickByRegex(regexText);
+        return rResult.ok
+          ? "Clicked: " + rResult.match
+          : "Click failed: " + rResult.reason;
+      }
+      case "type": {
+        var sel = ensureString(info.selector).trim();
+        if (!sel) return "Type failed: selector is missing.";
+        var tResult = runTypeBySelector(sel, ensureString(info.text), Boolean(info.pressEnter));
+        return tResult.ok
+          ? "Typed into selector: " + sel
+          : "Type failed: " + tResult.reason;
+      }
+      case "scroll": {
+        var dir =
+          ensureString(info.direction).toLowerCase() === "up" ? "up" : "down";
+        var amt = Number(info.amount) || 600;
+        var scResult = runDirectionalScroll(dir, amt);
+        return scResult.ok
+          ? "Scrolled " + dir + " by " + amt + "px"
+          : "Scroll failed: " + scResult.reason;
+      }
+      case "scroll_to_word": {
+        var rxText =
+          typeof action.commandInfo === "string"
+            ? action.commandInfo
+            : ensureString(info.regex);
+        if (!parseRegex(rxText)) return "Scroll failed: regex is missing or invalid.";
+        var swResult = runScrollToWord(rxText);
+        return swResult.ok
+          ? "Scrolled to match: " + swResult.match
+          : "Scroll failed: " + swResult.reason;
+      }
+      case "go_back":
+        window.history.back();
+        return "Went back.";
+      case "go_forward":
+        window.history.forward();
+        return "Went forward.";
+      case "refresh":
+        window.location.reload();
+        return "Refreshed page.";
+      case "close_tab":
+        window.close();
+        return "Attempted to close tab.";
+      case "wait": {
+        var millis = Number(info.milliseconds);
+        if (!Number.isFinite(millis)) {
+          var secs = Number(info.seconds);
+          millis = (Number.isFinite(secs) ? secs : 1) * 1000;
+        }
+        millis = Math.max(0, millis);
+        return "Wait " + Math.round(millis) + "ms (non-blocking in bookmarklet).";
+      }
+      case "error":
+        return "Tool error: " + JSON.stringify(action.commandInfo || {});
+      default:
+        return "Unsupported action: " + action.command;
+    }
+  }
+
+  /* ── normalize API response ── */
+  function normalizeActions(responseData) {
+    function toAction(item) {
+      if (!item || typeof item.command !== "string") return null;
+      return { command: item.command, commandInfo: item.commandInfo || {} };
+    }
+
+    if (
+      responseData &&
+      responseData.command === "batch" &&
+      responseData.commandInfo &&
+      Array.isArray(responseData.commandInfo.steps)
+    ) {
+      return responseData.commandInfo.steps.map(toAction).filter(Boolean);
+    }
+    if (Array.isArray(responseData.actions)) {
+      return responseData.actions.map(toAction).filter(Boolean);
+    }
+    if (responseData && typeof responseData.command === "string") {
+      var a = toAction(responseData);
+      return a ? [a] : [];
+    }
+    return [];
+  }
+
+  /* ── get page context ── */
+  function getPageContext() {
+    var html = document.documentElement
+      ? document.documentElement.outerHTML
+      : "";
+    return {
+      pageHtml: html.slice(0, MAX_HTML_CONTEXT),
+      pageUrl: location.href,
+      pageTitle: document.title || "",
+    };
+  }
+
+  /* ── process message ── */
+  function processMessage(text, source) {
+    var id = String(Date.now());
+
+    appendHistory({ id: id + ":user", role: "user", text: text, source: source, timestamp: nowIso() });
+    appendHistory({ id: id + ":thinking", role: "system", text: "Assistant is thinking...", timestamp: nowIso() });
+
+    pendingRequest = { id: id, text: text, source: source };
+    sendBtn.disabled = true;
+    setStatus("Assistant is working...");
+
+    var context = getPageContext();
+
+    fetch(API_URL, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        query: text,
+        html: context.pageHtml,
+        current_url: context.pageUrl,
+      }),
+    })
+      .then(function (response) {
+        if (!response.ok) throw new Error("API error: " + response.status);
+        return response.json();
+      })
+      .then(function (data) {
+        /* remove "thinking" message */
+        chatHistory = chatHistory.filter(function (h) {
+          return h.id !== id + ":thinking";
+        });
+
+        var actions = normalizeActions(data);
+        for (var i = 0; i < actions.length; i++) {
+          var action = actions[i];
+          var infoText =
+            typeof action.commandInfo === "string"
+              ? action.commandInfo
+              : JSON.stringify(action.commandInfo);
+
+          chatHistory.push({
+            id: id + ":tool:" + i + ":start",
+            role: "tool",
+            text: "Using tool: " + action.command + " (" + infoText + ")",
+            timestamp: nowIso(),
+          });
+
+          var toolText = executeAction(action);
+          chatHistory.push({
+            id: id + ":tool:" + i + ":end",
+            role: "tool",
+            text: toolText,
+            timestamp: nowIso(),
+          });
+        }
+
+        if (actions.length === 0) {
+          chatHistory.push({
+            id: id + ":empty",
+            role: "bot",
+            text: "No actions returned from API.",
+            timestamp: nowIso(),
+          });
+        }
+
+        renderHistory();
+      })
+      .catch(function (error) {
+        chatHistory = chatHistory.filter(function (h) {
+          return h.id !== id + ":thinking";
+        });
+        chatHistory.push({
+          id: id + ":error",
+          role: "bot",
+          text: "Failed to process request: " + error.message,
+          timestamp: nowIso(),
+        });
+        renderHistory();
+      })
+      .finally(function () {
+        pendingRequest = null;
+        sendBtn.disabled = false;
+        setStatus("Ready");
+      });
+  }
+
+  /* ── send message ── */
+  function sendCurrentMessage(source) {
+    var text = messageInput.value.trim();
+    if (!text || pendingRequest) return;
+    messageInput.value = "";
+    setStatus(source === "dictation" ? "Sending dictated message..." : "Sending...");
+    processMessage(text, source);
+  }
+
+  /* ── dictation ── */
+  function resetDictationIdleTimer() {
+    clearTimeout(dictationIdleTimer);
+    dictationIdleTimer = setTimeout(function () {
+      if (!isListening) return;
+      var text = messageInput.value.trim();
+      if (!text) return;
+      stopListening();
+      sendCurrentMessage("dictation");
+    }, DICTATION_IDLE_MS);
+  }
+
+  function startListening() {
+    if (!recognition) return;
+    try {
+      recognition.start();
+    } catch (_) {
+      return;
+    }
+    isListening = true;
+    micBtn.classList.add("active");
+    micBtn.textContent = "Listening...";
+    setStatus("Dictating... auto-send after 5s silence");
+    resetDictationIdleTimer();
+  }
+
+  function stopListening() {
+    if (!recognition) return;
+    recognition.stop();
+    isListening = false;
+    micBtn.classList.remove("active");
+    micBtn.textContent = "Dictate";
+    clearTimeout(dictationIdleTimer);
+    setStatus("Dictation off");
+  }
+
+  /* ── event listeners ── */
+  micBtn.addEventListener("click", function () {
+    if (!hasSpeech) return;
+    if (isListening) stopListening();
+    else startListening();
+  });
+
+  sendBtn.addEventListener("click", function () {
+    sendCurrentMessage("typed");
+  });
+
+  messageInput.addEventListener("keydown", function (e) {
+    if (e.key === "Enter" && !e.shiftKey) {
+      e.preventDefault();
+      sendCurrentMessage("typed");
+    }
+  });
+
+  clearBtn.addEventListener("click", function () {
+    chatHistory = [];
+    renderHistory();
+    messageInput.value = "";
+    setStatus("Chat cleared");
+  });
+
+  if (recognition) {
+    recognition.addEventListener("result", function (event) {
+      var interim = "";
+      for (var i = event.resultIndex; i < event.results.length; i++) {
+        var transcript = event.results[i][0].transcript.trim();
+        if (!transcript) continue;
+        if (event.results[i].isFinal) {
+          messageInput.value = (messageInput.value + " " + transcript).trim();
+          resetDictationIdleTimer();
+        } else {
+          interim += transcript + " ";
+        }
+      }
+      if (interim.trim()) {
+        setStatus("Dictating: " + interim.trim());
+        resetDictationIdleTimer();
+      }
+    });
+
+    recognition.addEventListener("error", function (event) {
+      if (event.error === "aborted") return;
+      stopListening();
+      var messages = {
+        "not-allowed": "Microphone access denied.",
+        "no-speech": "No speech detected. Keep speaking.",
+        network: "Network error. Check your connection.",
+      };
+      setStatus(messages[event.error] || "Error: " + event.error);
+    });
+
+    recognition.addEventListener("end", function () {
+      if (!isListening) return;
+      try { recognition.start(); } catch (_) { /* ignore */ }
+    });
+  } else {
+    micBtn.disabled = true;
+    setStatus("Dictation unavailable. Typing still works.");
+  }
+})();
