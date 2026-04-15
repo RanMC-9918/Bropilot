@@ -332,29 +332,41 @@
       .slice(0, maxChars || MAX_HTML_CONTEXT);
   }
 
-  function isSafeUrl(url) {
-    if (!url || typeof url !== "string") return false;
-    try {
-      var parsed = new URL(url);
-      return parsed.protocol === "http:" || parsed.protocol === "https:";
-    } catch (_) {
-      return false;
-    }
-  }
-
   function executeAction(action) {
     var info = (action && typeof action.commandInfo === "object" && action.commandInfo) ? action.commandInfo : {};
     switch (action.command) {
       case "open_tab": {
-        var url = ensureString(info.url) || "about:blank";
-        if (!isSafeUrl(url) && url !== "about:blank") return { ok: false, text: "Open tab failed: unsafe or invalid URL." };
-        window.open(url, "_blank");
-        return { ok: true, text: "Opened tab: " + url };
+        var rawUrl = ensureString(info.url) || "about:blank";
+        var openUrl;
+        if (rawUrl === "about:blank") {
+          openUrl = "about:blank";
+        } else {
+          try {
+            var parsedOpen = new URL(rawUrl);
+            if (parsedOpen.protocol !== "http:" && parsedOpen.protocol !== "https:") {
+              return { ok: false, text: "Open tab failed: unsafe or invalid URL." };
+            }
+            openUrl = parsedOpen.href;
+          } catch (_) {
+            return { ok: false, text: "Open tab failed: invalid URL." };
+          }
+        }
+        window.open(openUrl, "_blank");
+        return { ok: true, text: "Opened tab: " + openUrl };
       }
       case "navigate": {
-        var navUrl = ensureString(info.url);
-        if (!navUrl) return { ok: false, text: "Navigate failed: url is missing." };
-        if (!isSafeUrl(navUrl)) return { ok: false, text: "Navigate failed: unsafe or invalid URL." };
+        var rawNavUrl = ensureString(info.url);
+        if (!rawNavUrl) return { ok: false, text: "Navigate failed: url is missing." };
+        var navUrl;
+        try {
+          var parsedNav = new URL(rawNavUrl);
+          if (parsedNav.protocol !== "http:" && parsedNav.protocol !== "https:") {
+            return { ok: false, text: "Navigate failed: unsafe or invalid URL." };
+          }
+          navUrl = parsedNav.href;
+        } catch (_) {
+          return { ok: false, text: "Navigate failed: invalid URL." };
+        }
         window.location.href = navUrl;
         return { ok: true, text: "Navigated to: " + navUrl };
       }
