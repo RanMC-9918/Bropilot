@@ -10,7 +10,7 @@
   }
 
   const API_URL = "https://12e24a8e-83b6-42a7-a2fe-00dd99bd55ea-00-3fs2ghpg0s80h.spock.replit.dev:8000/";
-  const MAX_HTML_CONTEXT = 2620;
+  const MAX_HTML_CONTEXT = 262000;
   const HISTORY_LIMIT = 120;
   const STORAGE_KEY = "bropilot_chatHistory";
 
