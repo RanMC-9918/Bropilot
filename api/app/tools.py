@@ -115,6 +115,17 @@ def scrollToWord(regex: str) -> Output:
     return _build_output("scroll_to_word", {"regex": regex})
 
 
+@tool
+def getPageHtml(maxChars: Union[int, str] = 60000) -> Output:
+    """Request current page HTML from the frontend when DOM context is needed."""
+    max_chars = int(maxChars) if isinstance(maxChars, str) else maxChars
+    if max_chars < 1000:
+        max_chars = 1000
+    if max_chars > 120000:
+        max_chars = 120000
+    return _build_output("get_page_html", {"maxChars": max_chars})
+
+
 ALL_TOOLS = [
     openNewTab,
     navigateCurrentTab,
@@ -128,5 +139,6 @@ ALL_TOOLS = [
     closeCurrentTab,
     switchToTab,
     scrollToWord,
+    getPageHtml,
     wait,
 ]

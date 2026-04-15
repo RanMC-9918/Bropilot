@@ -479,6 +479,11 @@
         : `Scroll failed: ${result.reason}`;
     }
 
+    if (action.command === "get_page_html") {
+      const maxChars = Number(info.maxChars) || 60000;
+      return `Requested page HTML context (max ${Math.max(1000, maxChars)} chars).`;
+    }
+
     if (action.command === "error") {
       return `Tool error: ${JSON.stringify(action.commandInfo ?? {})}`;
     }

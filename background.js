@@ -3,11 +3,32 @@
 importScripts("tools.js");
 
 const API_URL = "https://api.sarveshs.dev";
-const MAX_HTML_CONTEXT = 262144;
+const MAX_HTML_CONTEXT = 60000;
 const HISTORY_LIMIT = 120;
+const WS_CONNECT_TIMEOUT_MS = 10000;
+const WS_EVENT_TIMEOUT_MS = 50000;
+const WS_MAX_EVENTS = 60;
+
+let activeRequestId = null;
+
+const WS_URL = (() => {
+  try {
+    const parsed = new URL(API_URL);
+    parsed.protocol = parsed.protocol === "https:" ? "wss:" : "ws:";
+    parsed.pathname = "/ws";
+    return parsed.toString();
+  } catch (_error) {
+    return "wss://api.sarveshs.dev/ws";
+  }
+})();
 
 function nowIso() {
   return new Date().toISOString();
+}
+
+function toErrorMessage(error) {
+  if (error instanceof Error) return error.message;
+  return String(error || "Unknown error");
 }
 
 async function getState() {
@@ -67,20 +88,29 @@ function normalizeActions(responseData) {
   return [];
 }
 
-async function getPageContext(tabId) {
+async function getPageContext(tabId, maxChars = MAX_HTML_CONTEXT) {
   const [{ result }] = await chrome.scripting.executeScript({
     target: { tabId },
-    func: (maxChars) => {
-      const html = document.documentElement
-        ? document.documentElement.outerHTML
-        : "";
+    func: (maxCaptureChars) => {
+      let html = "";
+      if (maxCaptureChars > 0) {
+        const raw = document.documentElement
+          ? document.documentElement.outerHTML
+          : "";
+        html = raw
+          .replace(/<script[\s\S]*?<\/script>/gi, "")
+          .replace(/<style[\s\S]*?<\/style>/gi, "")
+          .replace(/\s+/g, " ")
+          .trim()
+          .slice(0, maxCaptureChars);
+      }
       return {
-        html: html.slice(0, maxChars),
+        html,
         url: location.href,
         title: document.title || "",
       };
     },
-    args: [MAX_HTML_CONTEXT],
+    args: [maxChars],
   });
 
   return {
@@ -90,9 +120,281 @@ async function getPageContext(tabId) {
   };
 }
 
+function openWebSocket(url, timeoutMs) {
+  return new Promise((resolve, reject) => {
+    const ws = new WebSocket(url);
+    let settled = false;
+
+    const timer = setTimeout(() => {
+      if (settled) return;
+      settled = true;
+      try {
+        ws.close();
+      } catch (_error) {
+        // no-op
+      }
+      reject(new Error("WebSocket connection timed out"));
+    }, timeoutMs);
+
+    ws.onopen = () => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      resolve(ws);
+    };
+
+    ws.onerror = () => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      reject(new Error("WebSocket failed to connect"));
+    };
+
+    ws.onclose = () => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      reject(new Error("WebSocket closed before opening"));
+    };
+  });
+}
+
+function waitForSocketMessage(ws, timeoutMs) {
+  return new Promise((resolve, reject) => {
+    const cleanup = () => {
+      clearTimeout(timer);
+      ws.removeEventListener("message", onMessage);
+      ws.removeEventListener("error", onError);
+      ws.removeEventListener("close", onClose);
+    };
+
+    const onMessage = (event) => {
+      cleanup();
+      try {
+        resolve(JSON.parse(event.data));
+      } catch (_error) {
+        reject(new Error("Invalid JSON event from websocket"));
+      }
+    };
+
+    const onError = () => {
+      cleanup();
+      reject(new Error("WebSocket message error"));
+    };
+
+    const onClose = () => {
+      cleanup();
+      reject(new Error("WebSocket closed"));
+    };
+
+    const timer = setTimeout(() => {
+      cleanup();
+      reject(new Error("Timed out waiting for websocket message"));
+    }, timeoutMs);
+
+    ws.addEventListener("message", onMessage);
+    ws.addEventListener("error", onError);
+    ws.addEventListener("close", onClose);
+  });
+}
+
+function sendSocketJson(ws, payload) {
+  ws.send(JSON.stringify(payload));
+}
+
+function closeSocket(ws) {
+  if (!ws) return;
+  try {
+    ws.close();
+  } catch (_error) {
+    // no-op
+  }
+}
+
+function toolSucceeded(action, toolText) {
+  if (action.command === "error") return false;
+  const text = String(toolText || "").toLowerCase();
+  return !text.includes("failed") && !text.includes("tool error");
+}
+
+async function processMessageViaHttp(id, text, tabId, context) {
+  const response = await fetch(API_URL, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      query: text,
+      html: context.pageHtml,
+      current_url: context.pageUrl,
+    }),
+  });
+
+  if (!response.ok) {
+    throw new Error(`API error: ${response.status}`);
+  }
+
+  const data = await response.json();
+  const actions = normalizeActions(data);
+
+  for (let i = 0; i < actions.length; i += 1) {
+    const action = actions[i];
+    const actionInfoText =
+      typeof action.commandInfo === "string"
+        ? action.commandInfo
+        : JSON.stringify(action.commandInfo);
+
+    await appendHistory({
+      id: `${id}:tool:${i}:start`,
+      role: "tool",
+      text: `Using tool: ${action.command} (${actionInfoText})`,
+      timestamp: nowIso(),
+    });
+
+    const toolText = await BropilotTools.executeAction(tabId, action);
+    await appendHistory({
+      id: `${id}:tool:${i}:end`,
+      role: "tool",
+      text: toolText,
+      timestamp: nowIso(),
+    });
+  }
+
+  if (actions.length === 0) {
+    await appendHistory({
+      id: `${id}:empty`,
+      role: "bot",
+      text: "No actions returned from API.",
+      timestamp: nowIso(),
+    });
+  }
+}
+
+async function processMessageViaWebSocket(id, text, tabId, context) {
+  const ws = await openWebSocket(WS_URL, WS_CONNECT_TIMEOUT_MS);
+  let stepCount = 0;
+
+  try {
+    sendSocketJson(ws, {
+      type: "start_session",
+      request_id: id,
+      query: text,
+      current_url: context.pageUrl,
+      html: null,
+    });
+
+    for (let eventCount = 0; eventCount < WS_MAX_EVENTS; eventCount += 1) {
+      const event = await waitForSocketMessage(ws, WS_EVENT_TIMEOUT_MS);
+      if (!event || typeof event.type !== "string") {
+        throw new Error("Malformed websocket event");
+      }
+
+      if (event.type === "status") {
+        await appendHistory({
+          id: `${id}:status:${eventCount}`,
+          role: "system",
+          text: event.message || "Working...",
+          timestamp: nowIso(),
+        });
+        continue;
+      }
+
+      if (event.type === "tool_call") {
+        const action = event.action;
+        if (!action || typeof action.command !== "string") {
+          throw new Error("Backend returned invalid tool_call action payload");
+        }
+
+        const actionInfoText =
+          typeof action.commandInfo === "string"
+            ? action.commandInfo
+            : JSON.stringify(action.commandInfo);
+
+        await appendHistory({
+          id: `${id}:tool:${stepCount}:start`,
+          role: "tool",
+          text: `Using tool: ${action.command} (${actionInfoText})`,
+          timestamp: nowIso(),
+        });
+
+        let toolText = "";
+        let success = false;
+        let latestContext = context;
+        const wantsHtml = action.command === "get_page_html";
+
+        try {
+          toolText = await BropilotTools.executeAction(tabId, action);
+          success = toolSucceeded(action, toolText);
+          latestContext = await getPageContext(
+            tabId,
+            wantsHtml
+              ? Number(action.commandInfo?.maxChars) || MAX_HTML_CONTEXT
+              : 0,
+          );
+        } catch (error) {
+          toolText = `Tool execution failed: ${toErrorMessage(error)}`;
+          success = false;
+        }
+
+        await appendHistory({
+          id: `${id}:tool:${stepCount}:end`,
+          role: "tool",
+          text: toolText,
+          timestamp: nowIso(),
+        });
+
+        sendSocketJson(ws, {
+          type: "tool_result",
+          request_id: id,
+          step_index:
+            typeof event.step_index === "number" ? event.step_index : stepCount,
+          success,
+          result_text: toolText,
+          current_url: latestContext.pageUrl,
+          html: wantsHtml ? latestContext.pageHtml : undefined,
+        });
+
+        stepCount += 1;
+        continue;
+      }
+
+      if (event.type === "tool_result_ack") {
+        continue;
+      }
+
+      if (event.type === "complete") {
+        const doneMessage =
+          typeof event.message === "string" && event.message.trim()
+            ? event.message.trim()
+            : "Task complete.";
+
+        await appendHistory({
+          id: `${id}:complete`,
+          role: "bot",
+          text: doneMessage,
+          timestamp: nowIso(),
+        });
+        return;
+      }
+
+      if (event.type === "error") {
+        throw new Error(event.error || "WebSocket session failed");
+      }
+    }
+
+    throw new Error("WebSocket session exceeded event limit");
+  } finally {
+    closeSocket(ws);
+  }
+}
+
 async function processMessage({ requestId, text, source, tabId }) {
   const id = requestId || `${Date.now()}`;
   console.info("[Bropilot] processMessage start", { id, source, tabId });
+
+  if (activeRequestId && activeRequestId !== id) {
+    throw new Error("Another request is already in progress");
+  }
+
+  activeRequestId = id;
 
   await appendHistory({
     id: `${id}:user`,
@@ -111,67 +413,30 @@ async function processMessage({ requestId, text, source, tabId }) {
   });
 
   try {
-    const context = await getPageContext(tabId);
+    const context = await getPageContext(tabId, 0);
 
-    const response = await fetch(API_URL, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        query: text,
-        html: context.pageHtml,
-        current_url: context.pageUrl,
-      }),
-    });
-    console.info("[Bropilot] API response status", response.status);
-
-    if (!response.ok) {
-      throw new Error(`API error: ${response.status}`);
-    }
-
-    const data = await response.json();
-    console.log("[Bropilot] API response data", data);
-    const actions = normalizeActions(data);
-
-    for (let i = 0; i < actions.length; i += 1) {
-      const action = actions[i];
-      const actionInfoText =
-        typeof action.commandInfo === "string"
-          ? action.commandInfo
-          : JSON.stringify(action.commandInfo);
-
+    try {
+      await processMessageViaWebSocket(id, text, tabId, context);
+    } catch (wsError) {
       await appendHistory({
-        id: `${id}:tool:${i}:start`,
-        role: "tool",
-        text: `Using tool: ${action.command} (${actionInfoText})`,
+        id: `${id}:ws:fallback`,
+        role: "system",
+        text: `WebSocket unavailable, using HTTP fallback: ${toErrorMessage(wsError)}`,
         timestamp: nowIso(),
       });
-
-      const toolText = await BropilotTools.executeAction(tabId, action);
-      await appendHistory({
-        id: `${id}:tool:${i}:end`,
-        role: "tool",
-        text: toolText,
-        timestamp: nowIso(),
-      });
-    }
-
-    if (actions.length === 0) {
-      await appendHistory({
-        id: `${id}:empty`,
-        role: "bot",
-        text: "No actions returned from API.",
-        timestamp: nowIso(),
-      });
+      const httpContext = await getPageContext(tabId, MAX_HTML_CONTEXT);
+      await processMessageViaHttp(id, text, tabId, httpContext);
     }
   } catch (error) {
     console.error("[Bropilot] processMessage failed", error);
     await appendHistory({
       id: `${id}:error`,
       role: "bot",
-      text: `Failed to process request: ${error.message}`,
+      text: `Failed to process request: ${toErrorMessage(error)}`,
       timestamp: nowIso(),
     });
   } finally {
+    activeRequestId = null;
     await clearPendingRequest();
   }
 }
@@ -197,7 +462,7 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
   if (message.type === "process_message") {
     processMessage(message)
       .then(() => sendResponse({ ok: true }))
-      .catch((error) => sendResponse({ ok: false, error: error.message }));
+      .catch((error) => sendResponse({ ok: false, error: toErrorMessage(error) }));
     return true;
   }
 
@@ -213,7 +478,7 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
         });
         sendResponse({ ok: true });
       })
-      .catch((error) => sendResponse({ ok: false, error: error.message }));
+      .catch((error) => sendResponse({ ok: false, error: toErrorMessage(error) }));
     return true;
   }
 
