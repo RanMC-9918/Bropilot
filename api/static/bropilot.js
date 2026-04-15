@@ -218,7 +218,7 @@
 
   function parseRegex(input) {
     var s = String(input || "").trim();
-    if (!s) return null;
+    if (!s || s.length > 500) return null;
     var slash = s.match(/^\/(.*)\/([a-z]*)$/i);
     if (slash) {
       try { return new RegExp(slash[1], slash[2] || "i"); } catch (_) { return null; }
@@ -323,13 +323,23 @@
   }
 
   function getPageHtmlContext(maxChars) {
-    var raw = document.documentElement ? document.documentElement.outerHTML : "";
-    return raw
-      .replace(/<script[\s\S]*?<\/script>/gi, "")
-      .replace(/<style[\s\S]*?<\/style>/gi, "")
+    var clone = document.documentElement ? document.documentElement.cloneNode(true) : null;
+    if (!clone) return "";
+    clone.querySelectorAll("script, style, noscript").forEach(function (el) { el.remove(); });
+    return clone.outerHTML
       .replace(/\s+/g, " ")
       .trim()
       .slice(0, maxChars || MAX_HTML_CONTEXT);
+  }
+
+  function isSafeUrl(url) {
+    if (!url || typeof url !== "string") return false;
+    try {
+      var parsed = new URL(url);
+      return parsed.protocol === "http:" || parsed.protocol === "https:";
+    } catch (_) {
+      return false;
+    }
   }
 
   function executeAction(action) {
@@ -337,12 +347,14 @@
     switch (action.command) {
       case "open_tab": {
         var url = ensureString(info.url) || "about:blank";
+        if (!isSafeUrl(url) && url !== "about:blank") return { ok: false, text: "Open tab failed: unsafe or invalid URL." };
         window.open(url, "_blank");
         return { ok: true, text: "Opened tab: " + url };
       }
       case "navigate": {
         var navUrl = ensureString(info.url);
         if (!navUrl) return { ok: false, text: "Navigate failed: url is missing." };
+        if (!isSafeUrl(navUrl)) return { ok: false, text: "Navigate failed: unsafe or invalid URL." };
         window.location.href = navUrl;
         return { ok: true, text: "Navigated to: " + navUrl };
       }
