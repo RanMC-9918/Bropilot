@@ -4,8 +4,22 @@
   if (document.getElementById("bropilot-root")) return;
 
   var API_URL = "https://api.sarveshs.dev";
-  var MAX_HTML_CONTEXT = 262144;
+  var MAX_HTML_CONTEXT = 60000;
   var DICTATION_IDLE_MS = 5000;
+  var WS_CONNECT_TIMEOUT_MS = 10000;
+  var WS_EVENT_TIMEOUT_MS = 50000;
+  var WS_MAX_EVENTS = 60;
+
+  var WS_URL = (function () {
+    try {
+      var parsed = new URL(API_URL);
+      parsed.protocol = parsed.protocol === "https:" ? "wss:" : "ws:";
+      parsed.pathname = "/ws";
+      return parsed.toString();
+    } catch (_) {
+      return "wss://api.sarveshs.dev/ws";
+    }
+  })();
 
   /* ── state ── */
   var chatHistory = [];
@@ -157,12 +171,15 @@
   closeBtn.addEventListener("click", function () {
     root.remove();
     style.remove();
-    if (recognition && isListening) {
-      recognition.stop();
-    }
+    if (recognition && isListening) recognition.stop();
   });
 
   /* ── helpers ── */
+  function toErrorMessage(error) {
+    if (error instanceof Error) return error.message;
+    return String(error || "Unknown error");
+  }
+
   function setStatus(text) {
     statusEl.textContent = text;
   }
@@ -194,7 +211,7 @@
     return new Date().toISOString();
   }
 
-  /* ── tool execution (runs in page context) ── */
+  /* ── in-page tool execution ── */
   function ensureString(value) {
     return typeof value === "string" ? value : "";
   }
@@ -212,28 +229,20 @@
   function runScrollToWord(regexText) {
     var HIGHLIGHT_ID = "bropilot-scroll-highlight";
     var styleId = "bropilot-scroll-style";
-
     if (!document.getElementById(styleId)) {
       var s = document.createElement("style");
       s.id = styleId;
-      s.textContent =
-        "." + HIGHLIGHT_ID + "{background:#fff2a8!important;outline:2px solid #ffd33d!important;border-radius:2px;transition:background .2s ease}";
+      s.textContent = "." + HIGHLIGHT_ID + "{background:#fff2a8!important;outline:2px solid #ffd33d!important;border-radius:2px;transition:background .2s ease}";
       document.head.appendChild(s);
     }
-
     var regex = parseRegex(regexText);
     if (!regex) return { ok: false, reason: "Invalid regex." };
-
-    document.querySelectorAll("." + HIGHLIGHT_ID).forEach(function (el) {
-      el.classList.remove(HIGHLIGHT_ID);
-    });
-
+    document.querySelectorAll("." + HIGHLIGHT_ID).forEach(function (el) { el.classList.remove(HIGHLIGHT_ID); });
     var walker = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT);
     var node;
     while ((node = walker.nextNode())) {
       var text = node.nodeValue || "";
-      if (!text.trim()) continue;
-      if (!regex.test(text)) continue;
+      if (!text.trim() || !regex.test(text)) continue;
       var parent = node.parentElement;
       if (!parent || root.contains(parent)) continue;
       parent.classList.add(HIGHLIGHT_ID);
@@ -246,33 +255,20 @@
   function runClickByRegex(regexText) {
     var HIGHLIGHT_ID = "bropilot-click-highlight";
     var styleId = "bropilot-click-style";
-
     if (!document.getElementById(styleId)) {
       var s = document.createElement("style");
       s.id = styleId;
-      s.textContent =
-        "." + HIGHLIGHT_ID + "{box-shadow:0 0 0 3px #4de0ff inset!important;background-color:rgba(77,224,255,.14)!important;transition:background-color .2s ease}";
+      s.textContent = "." + HIGHLIGHT_ID + "{box-shadow:0 0 0 3px #4de0ff inset!important;background-color:rgba(77,224,255,.14)!important;transition:background-color .2s ease}";
       document.head.appendChild(s);
     }
-
     var regex = parseRegex(regexText);
     if (!regex) return { ok: false, reason: "Invalid regex." };
-
-    document.querySelectorAll("." + HIGHLIGHT_ID).forEach(function (el) {
-      el.classList.remove(HIGHLIGHT_ID);
-    });
-
-    var candidates = Array.from(
-      document.querySelectorAll(
-        "a, button, input[type='button'], input[type='submit'], [role='button']"
-      )
-    );
-
+    document.querySelectorAll("." + HIGHLIGHT_ID).forEach(function (el) { el.classList.remove(HIGHLIGHT_ID); });
+    var candidates = Array.from(document.querySelectorAll("a, button, input[type='button'], input[type='submit'], [role='button']"));
     for (var i = 0; i < candidates.length; i++) {
       var el = candidates[i];
       var text = (el.innerText || el.textContent || el.value || "").trim();
-      if (!text || !regex.test(text)) continue;
-      if (root.contains(el)) continue;
+      if (!text || !regex.test(text) || root.contains(el)) continue;
       el.classList.add(HIGHLIGHT_ID);
       el.scrollIntoView({ behavior: "smooth", block: "center" });
       el.click();
@@ -294,15 +290,9 @@
     var target = document.querySelector(selector);
     if (!target) return { ok: false, reason: "No element matched selector." };
     if (root.contains(target)) return { ok: false, reason: "Cannot type into Bropilot UI elements." };
-
-    var isEditable =
-      target instanceof HTMLInputElement ||
-      target instanceof HTMLTextAreaElement ||
-      target.isContentEditable;
+    var isEditable = target instanceof HTMLInputElement || target instanceof HTMLTextAreaElement || target.isContentEditable;
     if (!isEditable) return { ok: false, reason: "Target element is not editable." };
-
     target.focus();
-
     if (target instanceof HTMLInputElement || target instanceof HTMLTextAreaElement) {
       target.value = String(text != null ? text : "");
       target.dispatchEvent(new Event("input", { bubbles: true }));
@@ -311,25 +301,14 @@
       target.textContent = String(text != null ? text : "");
       target.dispatchEvent(new Event("input", { bubbles: true }));
     }
-
     if (pressEnter) {
-      var keyDown = new KeyboardEvent("keydown", {
-        key: "Enter", code: "Enter", keyCode: 13, which: 13, bubbles: true,
-      });
-      var keyUp = new KeyboardEvent("keyup", {
-        key: "Enter", code: "Enter", keyCode: 13, which: 13, bubbles: true,
-      });
-      target.dispatchEvent(keyDown);
-      target.dispatchEvent(keyUp);
-
+      target.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", code: "Enter", keyCode: 13, which: 13, bubbles: true }));
+      target.dispatchEvent(new KeyboardEvent("keyup", { key: "Enter", code: "Enter", keyCode: 13, which: 13, bubbles: true }));
       if (target instanceof HTMLInputElement || target instanceof HTMLTextAreaElement) {
         var form = target.form;
         if (form) {
-          if (typeof form.requestSubmit === "function") {
-            form.requestSubmit();
-          } else {
-            form.submit();
-          }
+          if (typeof form.requestSubmit === "function") form.requestSubmit();
+          else form.submit();
         }
       }
     }
@@ -340,124 +319,108 @@
     var sign = direction === "up" ? -1 : 1;
     var value = Number(amount) || 600;
     window.scrollBy({ top: sign * value, left: 0, behavior: "smooth" });
-    return { ok: true, amount: value, direction: direction };
+    return { ok: true };
+  }
+
+  function getPageHtmlContext(maxChars) {
+    var raw = document.documentElement ? document.documentElement.outerHTML : "";
+    return raw
+      .replace(/<script[\s\S]*?<\/script>/gi, "")
+      .replace(/<style[\s\S]*?<\/style>/gi, "")
+      .replace(/\s+/g, " ")
+      .trim()
+      .slice(0, maxChars || MAX_HTML_CONTEXT);
   }
 
   function executeAction(action) {
-    var info =
-      action && typeof action.commandInfo === "object" && action.commandInfo
-        ? action.commandInfo
-        : {};
-
+    var info = (action && typeof action.commandInfo === "object" && action.commandInfo) ? action.commandInfo : {};
     switch (action.command) {
       case "open_tab": {
         var url = ensureString(info.url) || "about:blank";
         window.open(url, "_blank");
-        return "Opened tab: " + url;
+        return { ok: true, text: "Opened tab: " + url };
       }
       case "navigate": {
         var navUrl = ensureString(info.url);
-        if (!navUrl) return "Navigate failed: url is missing.";
+        if (!navUrl) return { ok: false, text: "Navigate failed: url is missing." };
         window.location.href = navUrl;
-        return "Navigated to: " + navUrl;
+        return { ok: true, text: "Navigated to: " + navUrl };
       }
       case "search_web": {
         var query = ensureString(info.query);
-        if (!query) return "Search failed: query is missing.";
+        if (!query) return { ok: false, text: "Search failed: query is missing." };
         window.open("https://duckduckgo.com/?q=" + encodeURIComponent(query), "_blank");
-        return "Opened web search for: " + query;
+        return { ok: true, text: "Opened web search for: " + query };
       }
       case "click": {
         if (typeof info.selector === "string" && info.selector.trim()) {
           var sResult = runClickBySelector(info.selector.trim());
-          return sResult.ok
-            ? "Clicked selector: " + info.selector.trim()
-            : "Click failed: " + sResult.reason;
+          return { ok: sResult.ok, text: sResult.ok ? "Clicked selector: " + info.selector.trim() : "Click failed: " + sResult.reason };
         }
-        var regexText =
-          typeof action.commandInfo === "string"
-            ? action.commandInfo
-            : ensureString(info.regex);
-        if (!regexText) return "Click failed: selector or regex is missing.";
+        var regexText = typeof action.commandInfo === "string" ? action.commandInfo : ensureString(info.regex);
+        if (!regexText) return { ok: false, text: "Click failed: selector or regex is missing." };
         var rResult = runClickByRegex(regexText);
-        return rResult.ok
-          ? "Clicked: " + rResult.match
-          : "Click failed: " + rResult.reason;
+        return { ok: rResult.ok, text: rResult.ok ? "Clicked: " + rResult.match : "Click failed: " + rResult.reason };
       }
       case "type": {
         var sel = ensureString(info.selector).trim();
-        if (!sel) return "Type failed: selector is missing.";
+        if (!sel) return { ok: false, text: "Type failed: selector is missing." };
         var tResult = runTypeBySelector(sel, ensureString(info.text), Boolean(info.pressEnter));
-        return tResult.ok
-          ? "Typed into selector: " + sel
-          : "Type failed: " + tResult.reason;
+        return { ok: tResult.ok, text: tResult.ok ? "Typed into selector: " + sel : "Type failed: " + tResult.reason };
       }
       case "scroll": {
-        var dir =
-          ensureString(info.direction).toLowerCase() === "up" ? "up" : "down";
+        var dir = ensureString(info.direction).toLowerCase() === "up" ? "up" : "down";
         var amt = Number(info.amount) || 600;
         var scResult = runDirectionalScroll(dir, amt);
-        return scResult.ok
-          ? "Scrolled " + dir + " by " + amt + "px"
-          : "Scroll failed: " + scResult.reason;
+        return { ok: scResult.ok, text: "Scrolled " + dir + " by " + amt + "px" };
       }
       case "scroll_to_word": {
-        var rxText =
-          typeof action.commandInfo === "string"
-            ? action.commandInfo
-            : ensureString(info.regex);
-        if (!parseRegex(rxText)) return "Scroll failed: regex is missing or invalid.";
+        var rxText = typeof action.commandInfo === "string" ? action.commandInfo : ensureString(info.regex);
+        if (!parseRegex(rxText)) return { ok: false, text: "Scroll failed: regex is missing or invalid." };
         var swResult = runScrollToWord(rxText);
-        return swResult.ok
-          ? "Scrolled to match: " + swResult.match
-          : "Scroll failed: " + swResult.reason;
+        return { ok: swResult.ok, text: swResult.ok ? "Scrolled to match: " + swResult.match : "Scroll failed: " + swResult.reason };
+      }
+      case "get_page_html": {
+        var maxChars = Number(info.maxChars) || MAX_HTML_CONTEXT;
+        return { ok: true, text: "Requested page HTML (max " + maxChars + " chars).", html: getPageHtmlContext(maxChars) };
       }
       case "go_back":
         window.history.back();
-        return "Went back.";
+        return { ok: true, text: "Went back." };
       case "go_forward":
         window.history.forward();
-        return "Went forward.";
+        return { ok: true, text: "Went forward." };
       case "refresh":
         window.location.reload();
-        return "Refreshed page.";
+        return { ok: true, text: "Refreshed page." };
       case "close_tab":
         window.close();
-        return "Attempted to close tab.";
+        return { ok: true, text: "Attempted to close tab." };
       case "wait": {
         var millis = Number(info.milliseconds);
         if (!Number.isFinite(millis)) {
           var secs = Number(info.seconds);
           millis = (Number.isFinite(secs) ? secs : 1) * 1000;
         }
-        millis = Math.max(0, millis);
-        return "Wait " + Math.round(millis) + "ms (non-blocking in bookmarklet).";
+        return { ok: true, text: "Wait " + Math.round(Math.max(0, millis)) + "ms (non-blocking in bookmarklet)." };
       }
       case "error":
-        return "Tool error: " + JSON.stringify(action.commandInfo || {});
+        return { ok: false, text: "Tool error: " + JSON.stringify(action.commandInfo || {}) };
       default:
-        return "Unsupported action: " + action.command;
+        return { ok: false, text: "Unsupported action: " + action.command };
     }
   }
 
-  /* ── normalize API response ── */
+  /* ── normalize HTTP API response ── */
   function normalizeActions(responseData) {
     function toAction(item) {
       if (!item || typeof item.command !== "string") return null;
       return { command: item.command, commandInfo: item.commandInfo || {} };
     }
-
-    if (
-      responseData &&
-      responseData.command === "batch" &&
-      responseData.commandInfo &&
-      Array.isArray(responseData.commandInfo.steps)
-    ) {
+    if (responseData && responseData.command === "batch" && responseData.commandInfo && Array.isArray(responseData.commandInfo.steps)) {
       return responseData.commandInfo.steps.map(toAction).filter(Boolean);
     }
-    if (Array.isArray(responseData.actions)) {
-      return responseData.actions.map(toAction).filter(Boolean);
-    }
+    if (Array.isArray(responseData.actions)) return responseData.actions.map(toAction).filter(Boolean);
     if (responseData && typeof responseData.command === "string") {
       var a = toAction(responseData);
       return a ? [a] : [];
@@ -465,16 +428,199 @@
     return [];
   }
 
-  /* ── get page context ── */
-  function getPageContext() {
-    var html = document.documentElement
-      ? document.documentElement.outerHTML
-      : "";
+  /* ── page context ── */
+  function getPageContext(includeHtml) {
     return {
-      pageHtml: html.slice(0, MAX_HTML_CONTEXT),
+      pageHtml: includeHtml ? getPageHtmlContext(MAX_HTML_CONTEXT) : "",
       pageUrl: location.href,
       pageTitle: document.title || "",
     };
+  }
+
+  function toolSucceeded(action, toolText) {
+    if (action.command === "error") return false;
+    var text = String(toolText || "").toLowerCase();
+    return !text.includes("failed") && !text.includes("tool error");
+  }
+
+  /* ── WebSocket transport ── */
+  function openWebSocket(url, timeoutMs) {
+    return new Promise(function (resolve, reject) {
+      var ws = new WebSocket(url);
+      var settled = false;
+
+      var timer = setTimeout(function () {
+        if (settled) return;
+        settled = true;
+        try { ws.close(); } catch (_) { /* no-op */ }
+        reject(new Error("WebSocket connection timed out"));
+      }, timeoutMs);
+
+      ws.onopen = function () {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        resolve(ws);
+      };
+      ws.onerror = function () {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        reject(new Error("WebSocket failed to connect"));
+      };
+      ws.onclose = function () {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        reject(new Error("WebSocket closed before opening"));
+      };
+    });
+  }
+
+  function waitForSocketMessage(ws, timeoutMs) {
+    return new Promise(function (resolve, reject) {
+      var timer;
+      function cleanup() {
+        clearTimeout(timer);
+        ws.removeEventListener("message", onMessage);
+        ws.removeEventListener("error", onError);
+        ws.removeEventListener("close", onClose);
+      }
+      function onMessage(event) {
+        cleanup();
+        try { resolve(JSON.parse(event.data)); }
+        catch (_) { reject(new Error("Invalid JSON from websocket")); }
+      }
+      function onError() { cleanup(); reject(new Error("WebSocket message error")); }
+      function onClose() { cleanup(); reject(new Error("WebSocket closed")); }
+      timer = setTimeout(function () { cleanup(); reject(new Error("Timed out waiting for websocket message")); }, timeoutMs);
+      ws.addEventListener("message", onMessage);
+      ws.addEventListener("error", onError);
+      ws.addEventListener("close", onClose);
+    });
+  }
+
+  function sendSocketJson(ws, payload) {
+    ws.send(JSON.stringify(payload));
+  }
+
+  function closeSocket(ws) {
+    if (!ws) return;
+    try { ws.close(); } catch (_) { /* no-op */ }
+  }
+
+  function processMessageViaWebSocket(id, text) {
+    return openWebSocket(WS_URL, WS_CONNECT_TIMEOUT_MS).then(function (ws) {
+      var context = getPageContext(false);
+      var stepCount = 0;
+
+      sendSocketJson(ws, {
+        type: "start_session",
+        request_id: id,
+        query: text,
+        current_url: context.pageUrl,
+        html: null,
+      });
+
+      function processNext(eventCount) {
+        if (eventCount >= WS_MAX_EVENTS) {
+          closeSocket(ws);
+          throw new Error("WebSocket session exceeded event limit");
+        }
+
+        return waitForSocketMessage(ws, WS_EVENT_TIMEOUT_MS).then(function (event) {
+          if (!event || typeof event.type !== "string") throw new Error("Malformed websocket event");
+
+          if (event.type === "status") {
+            appendHistory({ id: id + ":status:" + eventCount, role: "system", text: event.message || "Working...", timestamp: nowIso() });
+            return processNext(eventCount + 1);
+          }
+
+          if (event.type === "tool_call") {
+            var action = event.action;
+            if (!action || typeof action.command !== "string") throw new Error("Invalid tool_call action payload");
+
+            var infoText = typeof action.commandInfo === "string" ? action.commandInfo : JSON.stringify(action.commandInfo);
+            appendHistory({ id: id + ":tool:" + stepCount + ":start", role: "tool", text: "Using tool: " + action.command + " (" + infoText + ")", timestamp: nowIso() });
+
+            var result;
+            try {
+              result = executeAction(action);
+            } catch (err) {
+              result = { ok: false, text: "Tool execution failed: " + toErrorMessage(err) };
+            }
+
+            appendHistory({ id: id + ":tool:" + stepCount + ":end", role: "tool", text: result.text, timestamp: nowIso() });
+
+            var latestUrl = location.href;
+            var responseHtml = (action.command === "get_page_html" && result.html) ? result.html : undefined;
+
+            sendSocketJson(ws, {
+              type: "tool_result",
+              request_id: id,
+              step_index: typeof event.step_index === "number" ? event.step_index : stepCount,
+              success: toolSucceeded(action, result.text),
+              result_text: result.text,
+              current_url: latestUrl,
+              html: responseHtml,
+            });
+
+            stepCount += 1;
+            return processNext(eventCount + 1);
+          }
+
+          if (event.type === "tool_result_ack") {
+            return processNext(eventCount + 1);
+          }
+
+          if (event.type === "complete") {
+            closeSocket(ws);
+            var doneMessage = typeof event.message === "string" && event.message.trim() ? event.message.trim() : "Task complete.";
+            appendHistory({ id: id + ":complete", role: "bot", text: doneMessage, timestamp: nowIso() });
+            return;
+          }
+
+          if (event.type === "error") {
+            closeSocket(ws);
+            throw new Error(event.error || "WebSocket session failed");
+          }
+
+          return processNext(eventCount + 1);
+        });
+      }
+
+      return processNext(0).catch(function (err) {
+        closeSocket(ws);
+        throw err;
+      });
+    });
+  }
+
+  /* ── HTTP fallback transport ── */
+  function processMessageViaHttp(id, text) {
+    var context = getPageContext(true);
+    return fetch(API_URL, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ query: text, html: context.pageHtml, current_url: context.pageUrl }),
+    })
+      .then(function (response) {
+        if (!response.ok) throw new Error("API error: " + response.status);
+        return response.json();
+      })
+      .then(function (data) {
+        var actions = normalizeActions(data);
+        for (var i = 0; i < actions.length; i++) {
+          var action = actions[i];
+          var infoText = typeof action.commandInfo === "string" ? action.commandInfo : JSON.stringify(action.commandInfo);
+          appendHistory({ id: id + ":tool:" + i + ":start", role: "tool", text: "Using tool: " + action.command + " (" + infoText + ")", timestamp: nowIso() });
+          var result = executeAction(action);
+          appendHistory({ id: id + ":tool:" + i + ":end", role: "tool", text: result.text, timestamp: nowIso() });
+        }
+        if (actions.length === 0) {
+          appendHistory({ id: id + ":empty", role: "bot", text: "No actions returned from API.", timestamp: nowIso() });
+        }
+      });
   }
 
   /* ── process message ── */
@@ -484,76 +630,27 @@
     appendHistory({ id: id + ":user", role: "user", text: text, source: source, timestamp: nowIso() });
     appendHistory({ id: id + ":thinking", role: "system", text: "Assistant is thinking...", timestamp: nowIso() });
 
-    pendingRequest = { id: id, text: text, source: source };
+    pendingRequest = { id: id };
     sendBtn.disabled = true;
     setStatus("Assistant is working...");
 
-    var context = getPageContext();
+    function removeThinking() {
+      chatHistory = chatHistory.filter(function (h) { return h.id !== id + ":thinking"; });
+    }
 
-    fetch(API_URL, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        query: text,
-        html: context.pageHtml,
-        current_url: context.pageUrl,
-      }),
-    })
-      .then(function (response) {
-        if (!response.ok) throw new Error("API error: " + response.status);
-        return response.json();
-      })
-      .then(function (data) {
-        /* remove "thinking" message */
-        chatHistory = chatHistory.filter(function (h) {
-          return h.id !== id + ":thinking";
-        });
-
-        var actions = normalizeActions(data);
-        for (var i = 0; i < actions.length; i++) {
-          var action = actions[i];
-          var infoText =
-            typeof action.commandInfo === "string"
-              ? action.commandInfo
-              : JSON.stringify(action.commandInfo);
-
-          chatHistory.push({
-            id: id + ":tool:" + i + ":start",
-            role: "tool",
-            text: "Using tool: " + action.command + " (" + infoText + ")",
-            timestamp: nowIso(),
-          });
-
-          var toolText = executeAction(action);
-          chatHistory.push({
-            id: id + ":tool:" + i + ":end",
-            role: "tool",
-            text: toolText,
-            timestamp: nowIso(),
-          });
-        }
-
-        if (actions.length === 0) {
-          chatHistory.push({
-            id: id + ":empty",
-            role: "bot",
-            text: "No actions returned from API.",
-            timestamp: nowIso(),
-          });
-        }
-
+    processMessageViaWebSocket(id, text)
+      .then(function () {
+        removeThinking();
         renderHistory();
       })
+      .catch(function (wsError) {
+        removeThinking();
+        appendHistory({ id: id + ":ws:fallback", role: "system", text: "WebSocket unavailable, using HTTP fallback: " + toErrorMessage(wsError), timestamp: nowIso() });
+        return processMessageViaHttp(id, text);
+      })
       .catch(function (error) {
-        chatHistory = chatHistory.filter(function (h) {
-          return h.id !== id + ":thinking";
-        });
-        chatHistory.push({
-          id: id + ":error",
-          role: "bot",
-          text: "Failed to process request: " + error.message,
-          timestamp: nowIso(),
-        });
+        removeThinking();
+        appendHistory({ id: id + ":error", role: "bot", text: "Failed to process request: " + toErrorMessage(error), timestamp: nowIso() });
         renderHistory();
       })
       .finally(function () {
@@ -586,11 +683,7 @@
 
   function startListening() {
     if (!recognition) return;
-    try {
-      recognition.start();
-    } catch (_) {
-      return;
-    }
+    try { recognition.start(); } catch (_) { return; }
     isListening = true;
     micBtn.classList.add("active");
     micBtn.textContent = "Listening...";
@@ -611,19 +704,13 @@
   /* ── event listeners ── */
   micBtn.addEventListener("click", function () {
     if (!hasSpeech) return;
-    if (isListening) stopListening();
-    else startListening();
+    if (isListening) stopListening(); else startListening();
   });
 
-  sendBtn.addEventListener("click", function () {
-    sendCurrentMessage("typed");
-  });
+  sendBtn.addEventListener("click", function () { sendCurrentMessage("typed"); });
 
   messageInput.addEventListener("keydown", function (e) {
-    if (e.key === "Enter" && !e.shiftKey) {
-      e.preventDefault();
-      sendCurrentMessage("typed");
-    }
+    if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); sendCurrentMessage("typed"); }
   });
 
   clearBtn.addEventListener("click", function () {
@@ -646,20 +733,13 @@
           interim += transcript + " ";
         }
       }
-      if (interim.trim()) {
-        setStatus("Dictating: " + interim.trim());
-        resetDictationIdleTimer();
-      }
+      if (interim.trim()) { setStatus("Dictating: " + interim.trim()); resetDictationIdleTimer(); }
     });
 
     recognition.addEventListener("error", function (event) {
       if (event.error === "aborted") return;
       stopListening();
-      var messages = {
-        "not-allowed": "Microphone access denied.",
-        "no-speech": "No speech detected. Keep speaking.",
-        network: "Network error. Check your connection.",
-      };
+      var messages = { "not-allowed": "Microphone access denied.", "no-speech": "No speech detected.", network: "Network error." };
       setStatus(messages[event.error] || "Error: " + event.error);
     });
 
