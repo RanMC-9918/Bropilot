@@ -218,6 +218,7 @@
 
   function parseRegex(input) {
     var s = String(input || "").trim();
+    // Length cap guards against ReDoS; patterns come from the trusted backend API.
     if (!s || s.length > 500) return null;
     var slash = s.match(/^\/(.*)\/([a-z]*)$/i);
     if (slash) {
