@@ -23,7 +23,7 @@ export OLLAMA_THINK=false
 
 We have a number of tools to cover everyday tasks where bropilot could be used, but the tools list can always be customized.
 
-- GetPageContent (returns all text elements)
+- GetPageContent (returns all visible text)
 - GetPageClickables (returns all clickable elements)
 - GetPageLinks (returns all link elements \gt a \lt)
 - ClickElementWithCSSSelector (returns after clicks CSS selected element)
