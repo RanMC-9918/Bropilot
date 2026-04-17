@@ -7,7 +7,7 @@ import os
 from time import perf_counter
 from typing import Any, Optional
 
-from langchain_core.messages import HumanMessage, SystemMessage
+from langchain_core.messages import HumanMessage, SystemMessage, ToolMessage
 from langchain_google_genai import ChatGoogleGenerativeAI
 from langchain_ollama import ChatOllama
 
@@ -24,9 +24,8 @@ BACKUP_GEMINI_MODEL = os.getenv("BACKUP_GEMINI_MODEL", "gemma-4-31b-a4b-it")
 GEMINI_TEMPERATURE = float(os.getenv("GEMINI_TEMPERATURE", "0"))
 OLLAMA_MODEL = os.getenv("OLLAMA_MODEL", "llama3.1")
 OLLAMA_BASE_URL = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434")
-WS_MAX_STEPS = int(os.getenv("WS_MAX_STEPS", "8"))
+WS_MAX_STEPS = int(os.getenv("WS_MAX_STEPS", "50"))
 WS_STEP_TIMEOUT_SECONDS = int(os.getenv("WS_STEP_TIMEOUT_SECONDS", "45"))
-WS_DONE_CHECK_RETRIES = int(os.getenv("WS_DONE_CHECK_RETRIES", "2"))
 WS_STAGNATION_STEPS = int(os.getenv("WS_STAGNATION_STEPS", "3"))
 
 if PROVIDER not in {"google", "ollama"}:
@@ -66,23 +65,24 @@ backup_llm_with_tools = backup_llm.bind_tools(ALL_TOOLS) if backup_llm else None
 SYSTEM_PROMPT = (
     "You are a browser automation agent.\n"
     "Use only the provided tools to complete the user's request.\n"
+    "LIMIT getPageContent use when possible and predict button presses and tool calls by CHAINING them in one request.\n"
+    "Do NOT use multiple getter tools in one request, if you want to click get clicks, if you want to click a link get links.\n"
+    "Use regexp selectors to click or type on elements before they fully load by passing expected text.\n"
     "Call multiple tools when several steps are needed.\n"
+    "Assume the page is ALWAYS fully loaded. Never wait or refresh to let a page load. If you don't see what you need, CLICK obvious 'Play', 'Accept', or 'Close' overlays first.\n"
     "If the request is ambiguous, return no tool calls."
 )
 
 WS_SYSTEM_PROMPT = (
     "You are an interactive browser automation agent.\n"
-    "Return exactly one tool call for the immediate next step when an action is needed.\n"
-    "Call getPageHtml when you need fresh DOM context before choosing selectors.\n"
+    "You may return MULTIPLE tool calls in a single response to chain actions tighter together.\n"
+    "LIMIT getPageContent use when possible and predict button presses and tool calls by CHAINING them.\n"
+    "Use regexp selectors to interact with elements before loading if you can predict what's on the next page.\n"
+    "Avoid using getPageHtml unless strictly necessary, it is very slow. Use specific gets instead.\n"
     "Use only provided tools.\n"
-    "If the task is complete or blocked, respond in plain text with a short completion or blocker note and no tool call."
-)
-
-DONE_CHECK_SYSTEM_PROMPT = (
-    "You validate task completion for a browser automation run.\n"
-    "Return ONLY JSON with keys: status and reason.\n"
-    "status must be one of: done, not_done, blocked.\n"
-    "reason must be a short sentence."
+    "Assume the page is ALWAYS fully loaded. Never wait or refresh to let a page load.\n"
+    "Do NOT cycle through getters endlessly. If you don't see what you need, take action (e.g. click 'Play') rather than just waiting.\n"
+    "If the task is complete or blocked, use respondToUser to message the user or return plain text."
 )
 
 
@@ -108,15 +108,15 @@ def build_messages(query: str, html: Optional[str], current_url: str):
     ]
 
 
-def invoke_with_fallback(messages: list[Any]):
+async def invoke_with_fallback(messages: list[Any]):
     try:
-        return primary_llm_with_tools.invoke(messages)
+        return await primary_llm_with_tools.ainvoke(messages)
     except Exception as primary_error:
         if backup_llm_with_tools is None:
             raise RuntimeError(f"Primary model failed: {primary_error}") from primary_error
 
         try:
-            return backup_llm_with_tools.invoke(messages)
+            return await backup_llm_with_tools.ainvoke(messages)
         except Exception as backup_error:
             raise RuntimeError(
                 f"Primary model failed: {primary_error}; Backup model failed: {backup_error}"
@@ -132,8 +132,8 @@ def response_text(response: Any) -> str:
     return str(content).strip()
 
 
-def invoke_and_get_tool_calls(messages: list[Any]) -> list[Any]:
-    response = invoke_with_fallback(messages)
+async def invoke_and_get_tool_calls(messages: list[Any]) -> list[Any]:
+    response = await invoke_with_fallback(messages)
 
     tool_calls = list(getattr(response, "tool_calls", []) or [])
     if tool_calls:
@@ -189,139 +189,6 @@ def elapsed_seconds(start_time: float) -> float:
     return round(perf_counter() - start_time, 2)
 
 
-def websocket_iteration_prompt(
-    query: str,
-    latest_url: str,
-    latest_html: Optional[str],
-    feedback_log: list[dict[str, Any]],
-) -> str:
-    feedback_lines: list[str] = []
-    for item in feedback_log[-6:]:
-        feedback_lines.append(
-            f"step={item.get('step')} tool={item.get('tool')} success={item.get('success')} note={item.get('note')}"
-        )
-
-    feedback_text = "\n".join(feedback_lines) if feedback_lines else "none"
-    html_text = latest_html or "[none]"
-    return (
-        f"User request:\n{query}\n\n"
-        f"Current page url:\n{latest_url}\n\n"
-        f"Recent execution feedback:\n{feedback_text}\n\n"
-        f"Current page html snippet:\n{html_text}\n\n"
-        "Return one next tool call, or plain text if complete/blocked."
-    )
-
-
-def pick_tool_name_and_args(tool_call: Any) -> tuple[Optional[str], dict[str, Any]]:
-    if isinstance(tool_call, dict):
-        name = tool_call.get("name")
-        args = tool_call.get("args", {})
-    else:
-        name = getattr(tool_call, "name", None)
-        args = getattr(tool_call, "args", {})
-
-    if not isinstance(name, str) or not name:
-        return None, {}
-
-    if not isinstance(args, dict):
-        args = {}
-
-    return name, args
-
-
-def parse_done_check_payload(text: str) -> Optional[dict[str, Any]]:
-    candidate = text.strip()
-    if not candidate:
-        return None
-
-    try:
-        data = json.loads(candidate)
-        if isinstance(data, dict):
-            return data
-    except json.JSONDecodeError:
-        pass
-
-    fenced = re.search(r"```(?:json)?\s*(.*?)\s*```", candidate, re.DOTALL)
-    if fenced:
-        try:
-            data = json.loads(fenced.group(1))
-            if isinstance(data, dict):
-                return data
-        except json.JSONDecodeError:
-            pass
-
-    first_obj = re.search(r"\{[\s\S]*\}", candidate)
-    if first_obj:
-        try:
-            data = json.loads(first_obj.group(0))
-            if isinstance(data, dict):
-                return data
-        except json.JSONDecodeError:
-            pass
-
-    return None
-
-
-def done_check_prompt(
-    query: str,
-    latest_url: str,
-    latest_html: Optional[str],
-    feedback_log: list[dict[str, Any]],
-) -> str:
-    feedback_lines: list[str] = []
-    for item in feedback_log[-8:]:
-        feedback_lines.append(
-            f"step={item.get('step')} tool={item.get('tool')} success={item.get('success')} note={item.get('note')}"
-        )
-
-    feedback_text = "\n".join(feedback_lines) if feedback_lines else "none"
-    html_hint = latest_html if latest_html else "[none]"
-
-    return (
-        f"User goal:\n{query}\n\n"
-        f"Current url:\n{latest_url}\n\n"
-        f"Recent execution feedback:\n{feedback_text}\n\n"
-        f"Current html context:\n{html_hint}\n\n"
-        "Decide if the goal is completed."
-    )
-
-
-def validate_task_completion(
-    query: str,
-    latest_url: str,
-    latest_html: Optional[str],
-    feedback_log: list[dict[str, Any]],
-) -> tuple[str, str]:
-    for _ in range(WS_DONE_CHECK_RETRIES):
-        messages = [
-            SystemMessage(content=DONE_CHECK_SYSTEM_PROMPT),
-            HumanMessage(
-                content=done_check_prompt(
-                    query=query,
-                    latest_url=latest_url,
-                    latest_html=latest_html,
-                    feedback_log=feedback_log,
-                )
-            ),
-        ]
-
-        response = invoke_with_fallback(messages)
-        tool_calls = list(getattr(response, "tool_calls", []) or [])
-        if tool_calls:
-            return "not_done", "Completion check requested another action"
-
-        parsed = parse_done_check_payload(response_text(response))
-        if not parsed:
-            continue
-
-        status = str(parsed.get("status", "")).strip().lower()
-        reason = str(parsed.get("reason", "")).strip() or "No reason provided"
-        if status in {"done", "not_done", "blocked"}:
-            return status, reason
-
-    return "blocked", "Unable to validate completion reliably"
-
-
 app = FastAPI()
 
 
@@ -358,8 +225,14 @@ async def websocket_root(websocket: WebSocket):
             )
             return
 
-        feedback_log: list[dict[str, Any]] = []
         stagnation_steps = 0
+        
+        chat_history = [
+            SystemMessage(content=WS_SYSTEM_PROMPT),
+            HumanMessage(
+                content=f"User request:\n{query}\n\nCurrent page url:\n{latest_url}\n\nCurrent page html snippet:\n{latest_html or '[none]'}\n\nReturn one or more next tool calls, or plain text if complete/blocked. The output of the tools will be passed back to you in the next iteration."
+            ),
+        ]
 
         for step_index in range(WS_MAX_STEPS):
             await websocket.send_json(
@@ -371,173 +244,187 @@ async def websocket_root(websocket: WebSocket):
                 }
             )
 
-            iteration_messages = [
-                SystemMessage(content=WS_SYSTEM_PROMPT),
-                HumanMessage(
-                    content=websocket_iteration_prompt(
-                        query=query,
-                        latest_url=latest_url,
-                        latest_html=latest_html,
-                        feedback_log=feedback_log,
-                    )
-                ),
-            ]
-
-            response = invoke_with_fallback(iteration_messages)
-            tool_calls = list(getattr(response, "tool_calls", []) or [])
-
-            if not tool_calls:
-                status, reason = validate_task_completion(
-                    query=query,
-                    latest_url=latest_url,
-                    latest_html=latest_html,
-                    feedback_log=feedback_log,
-                )
-                if status == "done":
-                    await websocket.send_json(
-                        {
-                            "type": "complete",
-                            "request_id": request_id,
-                            "total_steps": step_index,
-                            "time_taken": elapsed_seconds(start_time),
-                            "message": reason,
-                        }
-                    )
+            try:
+                response = await primary_llm_with_tools.ainvoke(chat_history)
+            except Exception as primary_error:
+                if backup_llm_with_tools is None:
+                    await websocket.send_json({
+                        "type": "error",
+                        "request_id": request_id,
+                        "step_index": step_index,
+                        "error": f"Primary model failed: {primary_error}"
+                    })
+                    return
+                try:
+                    response = await backup_llm_with_tools.ainvoke(chat_history)
+                except Exception as backup_error:
+                    await websocket.send_json({
+                        "type": "error",
+                        "request_id": request_id,
+                        "step_index": step_index,
+                        "error": f"Primary and backup model failed."
+                    })
                     return
 
-                if status == "blocked":
+            chat_history.append(response)
+
+            tool_calls = list(getattr(response, "tool_calls", []) or [])
+
+            resp_txt = response_text(response)
+            if resp_txt and not resp_txt.startswith('{') and not resp_txt.startswith('`'):
+                action_output = execute_tool_step("respondToUser", {"message": resp_txt})
+                await websocket.send_json(
+                    {
+                        "type": "tool_call",
+                        "request_id": request_id,
+                        "step_index": step_index,
+                        "tool_name": "respondToUser",
+                        "args": {"message": resp_txt},
+                        "action": {
+                            "command": action_output.command,
+                            "commandInfo": action_output.commandInfo,
+                        },
+                    }
+                )
+                try:
+                    await asyncio.wait_for(websocket.receive_json(), timeout=WS_STEP_TIMEOUT_SECONDS)
+                except Exception:
+                    pass
+
+            if not tool_calls:
+                await websocket.send_json(
+                    {
+                        "type": "complete",
+                        "request_id": request_id,
+                        "total_steps": step_index,
+                        "time_taken": elapsed_seconds(start_time),
+                        "message": "Task complete or blocked.",
+                    }
+                )
+                return
+
+            for sub_idx, tool_call in enumerate(tool_calls):
+                if isinstance(tool_call, dict):
+                    tool_id = tool_call.get("id", "none")
+                    tool_name = tool_call.get("name")
+                    args = tool_call.get("args", {})
+                else:
+                    tool_id = getattr(tool_call, "id", "none")
+                    tool_name = getattr(tool_call, "name", None)
+                    args = getattr(tool_call, "args", {})
+
+                if not tool_name:
+                    continue
+
+                action_output = execute_tool_step(tool_name, args)
+                await websocket.send_json(
+                    {
+                        "type": "tool_call",
+                        "request_id": request_id,
+                        "step_index": step_index,
+                        "tool_name": tool_name,
+                        "args": args,
+                        "action": {
+                            "command": action_output.command,
+                            "commandInfo": action_output.commandInfo,
+                        },
+                    }
+                )
+
+                try:
+                    result_raw = await asyncio.wait_for(
+                        websocket.receive_json(),
+                        timeout=WS_STEP_TIMEOUT_SECONDS,
+                    )
+                except asyncio.TimeoutError:
                     await websocket.send_json(
                         {
                             "type": "error",
                             "request_id": request_id,
                             "step_index": step_index,
-                            "error": f"Task blocked: {reason}",
+                            "error": "Timed out waiting for tool_result",
                         }
                     )
                     return
 
-                feedback_log.append(
-                    {
-                        "step": step_index,
-                        "tool": "done_check",
-                        "success": False,
-                        "note": f"Continuation required: {reason}",
-                    }
-                )
-                continue
+                if not isinstance(result_raw, dict) or result_raw.get("type") != "tool_result":
+                    await websocket.send_json(
+                        {
+                            "type": "error",
+                            "request_id": request_id,
+                            "step_index": step_index,
+                            "error": "Expected tool_result message",
+                        }
+                    )
+                    return
 
-            tool_name, args = pick_tool_name_and_args(tool_calls[0])
-            if tool_name is None:
+                result_message = WsToolResult.model_validate(result_raw)
+
+                if result_message.request_id != request_id:
+                    await websocket.send_json(
+                        {
+                            "type": "error",
+                            "request_id": request_id,
+                            "step_index": step_index,
+                            "error": "Mismatched request_id in tool_result",
+                        }
+                    )
+                    return
+
+                previous_url = latest_url
+                if result_message.current_url:
+                    latest_url = result_message.current_url
+                if tool_name == "getPageHtml" and result_message.html is not None:
+                    latest_html = result_message.html
+
+                made_progress = bool(result_message.success)
+                if latest_url != previous_url:
+                    made_progress = True
+                if tool_name == "getPageHtml":
+                    made_progress = False
+
+                if made_progress:
+                    stagnation_steps = 0
+                else:
+                    stagnation_steps += 1
+
+                if stagnation_steps >= WS_STAGNATION_STEPS:
+                    await websocket.send_json(
+                        {
+                            "type": "error",
+                            "request_id": request_id,
+                            "step_index": step_index,
+                            "error": "Task blocked: no progress across recent steps",
+                        }
+                    )
+                    return
+                
+                note = result_message.result_text
+                
+                content_str = note
+                if latest_url != previous_url:
+                    content_str += f"\\n[State check: URL changed to: {latest_url}]"
+
+                chat_history.append(
+                    ToolMessage(
+                        tool_call_id=tool_id,
+                        name=tool_name,
+                        content=content_str
+                    )
+                )
+
                 await websocket.send_json(
                     {
-                        "type": "error",
+                        "type": "tool_result_ack",
                         "request_id": request_id,
                         "step_index": step_index,
-                        "error": "Model returned invalid tool call",
+                        "success": result_message.success,
                     }
                 )
-                return
-
-            action_output = execute_tool_step(tool_name, args)
-            await websocket.send_json(
-                {
-                    "type": "tool_call",
-                    "request_id": request_id,
-                    "step_index": step_index,
-                    "tool_name": tool_name,
-                    "args": args,
-                    "action": {
-                        "command": action_output.command,
-                        "commandInfo": action_output.commandInfo,
-                    },
-                }
-            )
-
-            try:
-                result_raw = await asyncio.wait_for(
-                    websocket.receive_json(),
-                    timeout=WS_STEP_TIMEOUT_SECONDS,
-                )
-            except asyncio.TimeoutError:
-                await websocket.send_json(
-                    {
-                        "type": "error",
-                        "request_id": request_id,
-                        "step_index": step_index,
-                        "error": "Timed out waiting for tool_result",
-                    }
-                )
-                return
-
-            if not isinstance(result_raw, dict) or result_raw.get("type") != "tool_result":
-                await websocket.send_json(
-                    {
-                        "type": "error",
-                        "request_id": request_id,
-                        "step_index": step_index,
-                        "error": "Expected tool_result message",
-                    }
-                )
-                return
-
-            result_message = WsToolResult.model_validate(result_raw)
-
-            if result_message.request_id != request_id:
-                await websocket.send_json(
-                    {
-                        "type": "error",
-                        "request_id": request_id,
-                        "step_index": step_index,
-                        "error": "Mismatched request_id in tool_result",
-                    }
-                )
-                return
-
-            previous_url = latest_url
-            if result_message.current_url:
-                latest_url = result_message.current_url
-            if tool_name == "getPageHtml" and result_message.html is not None:
-                latest_html = result_message.html
-
-            made_progress = bool(result_message.success)
-            if latest_url != previous_url:
-                made_progress = True
-            if tool_name == "getPageHtml":
-                made_progress = False
-
-            if made_progress:
-                stagnation_steps = 0
-            else:
-                stagnation_steps += 1
-
-            if stagnation_steps >= WS_STAGNATION_STEPS:
-                await websocket.send_json(
-                    {
-                        "type": "error",
-                        "request_id": request_id,
-                        "step_index": step_index,
-                        "error": "Task blocked: no progress across recent steps",
-                    }
-                )
-                return
-
-            feedback_log.append(
-                {
-                    "step": step_index,
-                    "tool": tool_name,
-                    "success": result_message.success,
-                    "note": result_message.result_text,
-                }
-            )
-
-            await websocket.send_json(
-                {
-                    "type": "tool_result_ack",
-                    "request_id": request_id,
-                    "step_index": step_index,
-                    "success": result_message.success,
-                }
-            )
+                
+                # break chain if action failed
+                if not result_message.success:
+                    break
 
         await websocket.send_json(
             {
@@ -600,7 +487,7 @@ async def root(inp: Query):
 
     try:
         messages = build_messages(inp.query, inp.html, inp.current_url)
-        tool_calls = invoke_and_get_tool_calls(messages)
+        tool_calls = await invoke_and_get_tool_calls(messages)
 
         tool_outputs = []
         for tool_call in tool_calls:

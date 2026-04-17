@@ -2,12 +2,12 @@
 
 importScripts("tools.js");
 
-const API_URL = "https://api.sarveshs.dev";
+const API_URL = true ? "http://localhost:8000" : "https://api.sarveshs.dev";
 const MAX_HTML_CONTEXT = 60000;
 const HISTORY_LIMIT = 120;
 const WS_CONNECT_TIMEOUT_MS = 10000;
 const WS_EVENT_TIMEOUT_MS = 50000;
-const WS_MAX_EVENTS = 60;
+const WS_MAX_EVENTS = 300;
 
 let activeRequestId = null;
 
@@ -242,20 +242,32 @@ async function processMessageViaHttp(id, text, tabId, context) {
         ? action.commandInfo
         : JSON.stringify(action.commandInfo);
 
-    await appendHistory({
-      id: `${id}:tool:${i}:start`,
-      role: "tool",
-      text: `Using tool: ${action.command} (${actionInfoText})`,
-      timestamp: nowIso(),
-    });
+    if (action.command === "respond_to_user") {
+        await appendHistory({
+          id: `${id}:tool:${i}:message`,
+          role: "bot",
+          text: action.commandInfo.message || "Working...",
+          timestamp: nowIso(),
+        });
+    } else {
+        await appendHistory({
+          id: `${id}:tool:${i}:start`,
+          role: "tool",
+          text: `Using tool: ${action.command} (${actionInfoText})`,
+          timestamp: nowIso(),
+        });
+    }
 
     const toolText = await BropilotTools.executeAction(tabId, action);
-    await appendHistory({
-      id: `${id}:tool:${i}:end`,
-      role: "tool",
-      text: toolText,
-      timestamp: nowIso(),
-    });
+    
+    if (action.command !== "respond_to_user") {
+        await appendHistory({
+          id: `${id}:tool:${i}:end`,
+          role: "tool",
+          text: toolText,
+          timestamp: nowIso(),
+        });
+    }
   }
 
   if (actions.length === 0) {
@@ -288,10 +300,14 @@ async function processMessageViaWebSocket(id, text, tabId, context) {
       }
 
       if (event.type === "status") {
+        const msg = event.message || "Working...";
+        if (!msg.startsWith("Planning step") && !msg.startsWith("Execution finished")) {
+          // You could optionally log 'status' events less aggressively, but we'll leave it
+        }
         await appendHistory({
           id: `${id}:status:${eventCount}`,
           role: "system",
-          text: event.message || "Working...",
+          text: msg,
           timestamp: nowIso(),
         });
         continue;
@@ -308,12 +324,21 @@ async function processMessageViaWebSocket(id, text, tabId, context) {
             ? action.commandInfo
             : JSON.stringify(action.commandInfo);
 
-        await appendHistory({
-          id: `${id}:tool:${stepCount}:start`,
-          role: "tool",
-          text: `Using tool: ${action.command} (${actionInfoText})`,
-          timestamp: nowIso(),
-        });
+        if (action.command === "respond_to_user") {
+            await appendHistory({
+              id: `${id}:tool:${stepCount}:message`,
+              role: "bot",
+              text: action.commandInfo.message || "Working...",
+              timestamp: nowIso(),
+            });
+        } else {
+            await appendHistory({
+              id: `${id}:tool:${stepCount}:start`,
+              role: "tool",
+              text: `Using tool: ${action.command} (${actionInfoText})`,
+              timestamp: nowIso(),
+            });
+        }
 
         let toolText = "";
         let success = false;
@@ -334,12 +359,14 @@ async function processMessageViaWebSocket(id, text, tabId, context) {
           success = false;
         }
 
-        await appendHistory({
-          id: `${id}:tool:${stepCount}:end`,
-          role: "tool",
-          text: toolText,
-          timestamp: nowIso(),
-        });
+        if (action.command !== "respond_to_user") {
+            await appendHistory({
+              id: `${id}:tool:${stepCount}:end`,
+              role: "tool",
+              text: toolText,
+              timestamp: nowIso(),
+            });
+        }
 
         sendSocketJson(ws, {
           type: "tool_result",
@@ -366,12 +393,14 @@ async function processMessageViaWebSocket(id, text, tabId, context) {
             ? event.message.trim()
             : "Task complete.";
 
-        await appendHistory({
-          id: `${id}:complete`,
-          role: "bot",
-          text: doneMessage,
-          timestamp: nowIso(),
-        });
+        if (!doneMessage.includes("Stopped after max steps") && !doneMessage.includes("Validation checks finished")) {
+            await appendHistory({
+              id: `${id}:complete`,
+              role: "bot",
+              text: doneMessage,
+              timestamp: nowIso(),
+            });
+        }
         return;
       }
 
