@@ -1,9 +1,11 @@
 import asyncio
+import hashlib
 import json
 import re
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from dotenv import load_dotenv
 import os
+from collections import deque
 from time import perf_counter
 from typing import Any, Optional
 
@@ -27,6 +29,7 @@ OLLAMA_BASE_URL = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434")
 WS_MAX_STEPS = int(os.getenv("WS_MAX_STEPS", "50"))
 WS_STEP_TIMEOUT_SECONDS = int(os.getenv("WS_STEP_TIMEOUT_SECONDS", "45"))
 WS_STAGNATION_STEPS = int(os.getenv("WS_STAGNATION_STEPS", "3"))
+WS_REPEAT_TOOL_LIMIT = int(os.getenv("WS_REPEAT_TOOL_LIMIT", "2"))
 
 if PROVIDER not in {"google", "ollama"}:
     raise RuntimeError("PROVIDER must be either 'google' or 'ollama'.")
@@ -65,8 +68,10 @@ backup_llm_with_tools = backup_llm.bind_tools(ALL_TOOLS) if backup_llm else None
 SYSTEM_PROMPT = (
     "You are a browser automation agent.\n"
     "Use only the provided tools to complete the user's request.\n"
+    "Before choosing tools, do a brief internal plan: goal, current evidence, and best next action.\n"
     "LIMIT getPageContent use when possible and predict button presses and tool calls by CHAINING them in one request.\n"
     "Do NOT use multiple getter tools in one request, if you want to click get clicks, if you want to click a link get links.\n"
+    "Before click/type/scroll, verify the target likely exists from recent evidence; if uncertain, run one targeted getter first.\n"
     "Use regexp selectors to click or type on elements before they fully load by passing expected text.\n"
     "Call multiple tools when several steps are needed.\n"
     "Assume the page is ALWAYS fully loaded. Never wait or refresh to let a page load. If you don't see what you need, CLICK obvious 'Play', 'Accept', or 'Close' overlays first.\n"
@@ -75,14 +80,17 @@ SYSTEM_PROMPT = (
 
 WS_SYSTEM_PROMPT = (
     "You are an interactive browser automation agent.\n"
+    "Each turn, do a short internal plan: (1) goal, (2) known page state, (3) best next action(s), (4) completion check.\n"
     "You may return MULTIPLE tool calls in a single response to chain actions tighter together.\n"
     "LIMIT getPageContent use when possible and predict button presses and tool calls by CHAINING them.\n"
+    "Before click/type/scroll, verify target existence from latest evidence unless intentionally doing exploratory recovery.\n"
     "Use regexp selectors to interact with elements before loading if you can predict what's on the next page.\n"
     "Avoid using getPageHtml unless strictly necessary, it is very slow. Use specific gets instead.\n"
     "Use only provided tools.\n"
     "Assume the page is ALWAYS fully loaded. Never wait or refresh to let a page load.\n"
     "Do NOT cycle through getters endlessly. If you don't see what you need, take action (e.g. click 'Play') rather than just waiting.\n"
-    "If the task is complete or blocked, use respondToUser to message the user or return plain text."
+    "If recent actions are repeating without progress, change strategy instead of retrying the same call.\n"
+    "If the task is complete or blocked, use respondToUser to message the user or return plain text with a concise reason."
 )
 
 
@@ -189,6 +197,77 @@ def elapsed_seconds(start_time: float) -> float:
     return round(perf_counter() - start_time, 2)
 
 
+def summarize_params(params: Any) -> str:
+    if not isinstance(params, dict):
+        return "{}"
+    try:
+        normalized = json.dumps(params, sort_keys=True, ensure_ascii=True)
+    except Exception:
+        normalized = str(params)
+    if len(normalized) > 240:
+        normalized = normalized[:240] + "..."
+    return normalized
+
+
+def result_fingerprint(text: str) -> str:
+    compact = re.sub(r"\s+", " ", (text or "").strip())
+    return hashlib.sha1(compact[:800].encode("utf-8")).hexdigest()[:12]
+
+
+def classify_progress(
+    *,
+    tool_name: str,
+    success: bool,
+    previous_url: str,
+    current_url: str,
+    result_text: str,
+    previous_fingerprint: str,
+    result_meta: Optional[dict[str, Any]] = None,
+) -> tuple[bool, str, str]:
+    current_fingerprint = result_fingerprint(result_text)
+    url_changed = current_url != previous_url
+    text_changed = current_fingerprint != previous_fingerprint
+    meta_url_changed = bool(result_meta.get("url_changed")) if isinstance(result_meta, dict) else False
+    structured_success = (
+        bool(result_meta.get("success")) if isinstance(result_meta, dict) and "success" in result_meta else success
+    )
+    structured_error_code = (
+        str(result_meta.get("error_code"))
+        if isinstance(result_meta, dict) and result_meta.get("error_code")
+        else ""
+    )
+
+    made_progress = bool(structured_success)
+    if url_changed or meta_url_changed:
+        made_progress = True
+    if tool_name == "getPageHtml":
+        made_progress = text_changed
+
+    if url_changed or meta_url_changed:
+        reason = "url_changed"
+    elif structured_error_code:
+        reason = f"failed_{structured_error_code}"
+    elif made_progress and text_changed:
+        reason = "action_success_text_changed"
+    elif made_progress:
+        reason = "action_success"
+    elif text_changed:
+        reason = "text_changed_without_success"
+    else:
+        reason = "no_progress"
+
+    return made_progress, reason, current_fingerprint
+
+
+def completion_reason_from_text(text: str) -> str:
+    lowered = (text or "").lower()
+    if any(token in lowered for token in ("done", "completed", "finished", "success")):
+        return "task_complete"
+    if any(token in lowered for token in ("blocked", "cannot", "can't", "unable", "failed")):
+        return "blocked"
+    return "task_complete"
+
+
 app = FastAPI()
 
 
@@ -226,6 +305,8 @@ async def websocket_root(websocket: WebSocket):
             return
 
         stagnation_steps = 0
+        recent_calls: deque[tuple[str, str]] = deque(maxlen=6)
+        last_result_fp = result_fingerprint("")
         
         chat_history = [
             SystemMessage(content=WS_SYSTEM_PROMPT),
@@ -298,6 +379,7 @@ async def websocket_root(websocket: WebSocket):
                         "request_id": request_id,
                         "total_steps": step_index,
                         "time_taken": elapsed_seconds(start_time),
+                        "reason": completion_reason_from_text(resp_txt),
                         "message": "Task complete or blocked.",
                     }
                 )
@@ -315,6 +397,13 @@ async def websocket_root(websocket: WebSocket):
 
                 if not tool_name:
                     continue
+
+                args_summary = summarize_params(args)
+                call_signature = (tool_name, args_summary)
+                repeated_count = sum(1 for c in recent_calls if c == call_signature)
+                if repeated_count >= WS_REPEAT_TOOL_LIMIT:
+                    stagnation_steps += 1
+                recent_calls.append(call_signature)
 
                 action_output = execute_tool_step(tool_name, args)
                 await websocket.send_json(
@@ -371,17 +460,33 @@ async def websocket_root(websocket: WebSocket):
                     )
                     return
 
+                if result_message.step_index != step_index:
+                    await websocket.send_json(
+                        {
+                            "type": "error",
+                            "request_id": request_id,
+                            "step_index": step_index,
+                            "error": "Mismatched step_index in tool_result",
+                        }
+                    )
+                    return
+
                 previous_url = latest_url
                 if result_message.current_url:
                     latest_url = result_message.current_url
                 if tool_name == "getPageHtml" and result_message.html is not None:
                     latest_html = result_message.html
 
-                made_progress = bool(result_message.success)
-                if latest_url != previous_url:
-                    made_progress = True
-                if tool_name == "getPageHtml":
-                    made_progress = False
+                made_progress, progress_reason, current_fp = classify_progress(
+                    tool_name=tool_name,
+                    success=result_message.success,
+                    previous_url=previous_url,
+                    current_url=latest_url,
+                    result_text=result_message.result_text,
+                    previous_fingerprint=last_result_fp,
+                    result_meta=result_message.result_meta,
+                )
+                last_result_fp = current_fp
 
                 if made_progress:
                     stagnation_steps = 0
@@ -391,10 +496,13 @@ async def websocket_root(websocket: WebSocket):
                 if stagnation_steps >= WS_STAGNATION_STEPS:
                     await websocket.send_json(
                         {
-                            "type": "error",
+                            "type": "complete",
                             "request_id": request_id,
                             "step_index": step_index,
-                            "error": "Task blocked: no progress across recent steps",
+                            "total_steps": step_index + 1,
+                            "time_taken": elapsed_seconds(start_time),
+                            "reason": "blocked",
+                            "message": "Task blocked: no progress across recent steps",
                         }
                     )
                     return
@@ -404,6 +512,16 @@ async def websocket_root(websocket: WebSocket):
                 content_str = note
                 if latest_url != previous_url:
                     content_str += f"\\n[State check: URL changed to: {latest_url}]"
+                if isinstance(result_message.result_meta, dict):
+                    meta = result_message.result_meta
+                    content_str += (
+                        "\\n[ToolMeta: "
+                        f"success={meta.get('success')}; "
+                        f"error_code={meta.get('error_code')}; "
+                        f"element_found={meta.get('element_found')}; "
+                        f"element_count={meta.get('element_count')}]"
+                    )
+                content_str += f"\\n[Progress: {progress_reason}; repeated_calls={repeated_count}; step={step_index}]"
 
                 chat_history.append(
                     ToolMessage(
@@ -432,6 +550,7 @@ async def websocket_root(websocket: WebSocket):
                 "request_id": request_id,
                 "total_steps": WS_MAX_STEPS,
                 "time_taken": elapsed_seconds(start_time),
+                "reason": "max_steps",
                 "message": "Stopped after max steps",
             }
         )

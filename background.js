@@ -258,7 +258,8 @@ async function processMessageViaHttp(id, text, tabId, context) {
         });
     }
 
-    const toolText = await BropilotTools.executeAction(tabId, action);
+    const toolResult = await BropilotTools.executeActionDetailed(tabId, action);
+    const toolText = toolResult.result_text;
     
     if (action.command !== "respond_to_user") {
         await appendHistory({
@@ -283,6 +284,7 @@ async function processMessageViaHttp(id, text, tabId, context) {
 async function processMessageViaWebSocket(id, text, tabId, context) {
   const ws = await openWebSocket(WS_URL, WS_CONNECT_TIMEOUT_MS);
   let stepCount = 0;
+  let sessionContext = context;
 
   try {
     sendSocketJson(ws, {
@@ -342,21 +344,44 @@ async function processMessageViaWebSocket(id, text, tabId, context) {
 
         let toolText = "";
         let success = false;
-        let latestContext = context;
+        let resultMeta = null;
+        let latestContext = sessionContext;
         const wantsHtml = action.command === "get_page_html";
 
         try {
-          toolText = await BropilotTools.executeAction(tabId, action);
-          success = toolSucceeded(action, toolText);
+          const previousUrl = sessionContext.pageUrl;
+          const detailed = await BropilotTools.executeActionDetailed(tabId, action);
+          toolText = detailed.result_text;
+          success = Boolean(detailed.success);
           latestContext = await getPageContext(
             tabId,
             wantsHtml
               ? Number(action.commandInfo?.maxChars) || MAX_HTML_CONTEXT
               : 0,
           );
+          resultMeta = {
+            success: Boolean(detailed.success),
+            error_code: detailed.error_code || null,
+            error_message: detailed.error_message || null,
+            element_found: detailed.element_found ?? null,
+            element_count:
+              typeof detailed.element_count === "number" ? detailed.element_count : null,
+            url_changed: latestContext.pageUrl !== previousUrl,
+            diagnostics: detailed.diagnostics || null,
+          };
+          sessionContext = latestContext;
         } catch (error) {
           toolText = `Tool execution failed: ${toErrorMessage(error)}`;
           success = false;
+          resultMeta = {
+            success: false,
+            error_code: "execution_error",
+            error_message: toolText,
+            element_found: null,
+            element_count: null,
+            url_changed: false,
+            diagnostics: null,
+          };
         }
 
         if (action.command !== "respond_to_user") {
@@ -377,6 +402,7 @@ async function processMessageViaWebSocket(id, text, tabId, context) {
           result_text: toolText,
           current_url: latestContext.pageUrl,
           html: wantsHtml ? latestContext.pageHtml : undefined,
+          result_meta: resultMeta,
         });
 
         stepCount += 1;

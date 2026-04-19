@@ -25,6 +25,61 @@
     }
   }
 
+  function countListLines(text) {
+    const value = String(text || "").trim();
+    if (!value) return 0;
+    return value.split(/\n+/).filter(Boolean).length;
+  }
+
+  function inferErrorCode(text) {
+    const lowered = String(text || "").toLowerCase();
+    if (lowered.includes("missing") || lowered.includes("invalid")) return "invalid_args";
+    if (lowered.includes("not editable")) return "not_editable";
+    if (lowered.includes("unsupported")) return "unsupported_action";
+    if (lowered.includes("no matching") || lowered.includes("no element") || lowered.includes("no tab at index")) {
+      return "not_found";
+    }
+    if (lowered.includes("tool error") || lowered.includes("error:")) return "execution_error";
+    return null;
+  }
+
+  function inferStructuredOutcome(action, resultText) {
+    const command = action && typeof action.command === "string" ? action.command : "unknown";
+    const text = String(resultText || "");
+    const lowered = text.toLowerCase();
+    const errorCode = inferErrorCode(text);
+    const isFailure =
+      command === "error" ||
+      lowered.includes(" failed") ||
+      lowered.startsWith("failed") ||
+      lowered.includes("tool error") ||
+      lowered.includes("unsupported tool action") ||
+      lowered.includes("error:");
+
+    let elementCount = null;
+    if (command === "get_page_clickables" || command === "get_page_links" || command === "get_page_inputs") {
+      const body = text.includes("\n") ? text.split("\n").slice(1).join("\n") : "";
+      elementCount = countListLines(body);
+    }
+
+    const elementFound =
+      command.startsWith("click_") || command.startsWith("type_") || command.startsWith("scroll_")
+        ? !isFailure
+        : null;
+
+    return {
+      success: !isFailure,
+      error_code: isFailure ? errorCode || "execution_error" : null,
+      error_message: isFailure ? text : null,
+      element_found: elementFound,
+      element_count: elementCount,
+      diagnostics: {
+        command,
+        inferred: true,
+      },
+    };
+  }
+
   async function waitForTabLoad(tabId, timeoutMs = 15000) {
     return new Promise((resolve) => {
       let settled = false;
@@ -461,6 +516,111 @@
     return result;
   }
 
+  async function runGetInteractiveElements(tabId, limit) {
+    const [{ result }] = await chrome.scripting.executeScript({
+      target: { tabId },
+      func: (maxItems) => {
+        const max = Number.isFinite(Number(maxItems)) ? Math.max(1, Math.min(200, Number(maxItems))) : 50;
+        const selector = "a[href], button, input:not([type='hidden']), textarea, select, [role='button'], [role='link'], [tabindex]";
+        const elements = Array.from(document.querySelectorAll(selector));
+        const visible = elements.filter((el) => {
+          const style = window.getComputedStyle(el);
+          const rect = el.getBoundingClientRect();
+          return style.visibility !== "hidden" && style.display !== "none" && rect.width > 0 && rect.height > 0;
+        });
+
+        const items = visible.slice(0, max).map((el) => {
+          const rect = el.getBoundingClientRect();
+          const role = el.getAttribute("role") || "";
+          const text = (el.innerText || el.value || el.placeholder || el.getAttribute("aria-label") || "")
+            .replace(/\s+/g, " ")
+            .trim()
+            .slice(0, 120);
+          return {
+            tag: el.tagName.toLowerCase(),
+            id: el.id || "",
+            role,
+            name: el.getAttribute("name") || "",
+            text,
+            enabled: !(el.hasAttribute("disabled") || el.getAttribute("aria-disabled") === "true"),
+            rect: {
+              x: Math.round(rect.x),
+              y: Math.round(rect.y),
+              w: Math.round(rect.width),
+              h: Math.round(rect.height),
+            },
+          };
+        });
+
+        return { ok: true, count: items.length, items };
+      },
+      args: [limit],
+    });
+
+    return result || { ok: false, reason: "Unknown interactive inventory error." };
+  }
+
+  async function runFindBestElementMatch(tabId, query, limit) {
+    const [{ result }] = await chrome.scripting.executeScript({
+      target: { tabId },
+      func: (rawQuery, maxItems) => {
+        const q = String(rawQuery || "").trim().toLowerCase();
+        if (!q) return { ok: false, reason: "query is missing." };
+
+        const max = Number.isFinite(Number(maxItems)) ? Math.max(1, Math.min(50, Number(maxItems))) : 5;
+        const selector = "a[href], button, input:not([type='hidden']), textarea, select, [role='button'], [role='link'], [tabindex]";
+        const elements = Array.from(document.querySelectorAll(selector));
+
+        const tokens = q.split(/\s+/).filter(Boolean);
+        const scored = elements
+          .map((el) => {
+            const haystack = [
+              el.innerText,
+              el.value,
+              el.placeholder,
+              el.getAttribute("aria-label"),
+              el.id,
+              el.getAttribute("name"),
+              el.getAttribute("title"),
+            ]
+              .filter(Boolean)
+              .join(" ")
+              .toLowerCase();
+
+            let score = 0;
+            if (haystack.includes(q)) score += 10;
+            for (const token of tokens) {
+              if (haystack.includes(token)) score += 2;
+            }
+
+            if (el.tagName === "BUTTON" || el.getAttribute("role") === "button") score += 1;
+            if (score === 0) return null;
+
+            const label = (el.innerText || el.value || el.placeholder || el.id || "")
+              .replace(/\s+/g, " ")
+              .trim()
+              .slice(0, 120);
+
+            return {
+              score,
+              tag: el.tagName.toLowerCase(),
+              id: el.id || "",
+              role: el.getAttribute("role") || "",
+              text: label,
+            };
+          })
+          .filter(Boolean)
+          .sort((a, b) => b.score - a.score)
+          .slice(0, max);
+
+        return { ok: true, query: q, count: scored.length, matches: scored };
+      },
+      args: [query, limit],
+    });
+
+    return result || { ok: false, reason: "Unknown best-match error." };
+  }
+
   async function executeAction(tabId, action) {
     const info =
       action && typeof action.commandInfo === "object" && action.commandInfo
@@ -489,6 +649,22 @@
       if (!selector) return "Error: selector is missing.";
       const res = await runGetElementsBySelector(tabId, selector);
       return res || "Execution completed.";
+    }
+
+    if (action.command === "get_interactive_elements") {
+      const limit = Number(info.limit) || 50;
+      const res = await runGetInteractiveElements(tabId, limit);
+      if (!res.ok) return `Interactive inventory failed: ${res.reason}`;
+      return `Interactive Elements (${res.count}):\n${JSON.stringify(res.items)}`;
+    }
+
+    if (action.command === "find_best_element_match") {
+      const query = ensureString(info.query).trim();
+      if (!query) return "Find best match failed: query is missing.";
+      const limit = Number(info.limit) || 5;
+      const res = await runFindBestElementMatch(tabId, query, limit);
+      if (!res.ok) return `Find best match failed: ${res.reason}`;
+      return `Best Matches (${res.count}):\n${JSON.stringify(res.matches)}`;
     }
 
 
@@ -659,7 +835,18 @@
     return `Unsupported tool action: ${action.command}`;
   }
 
+  async function executeActionDetailed(tabId, action) {
+    const resultText = await executeAction(tabId, action);
+    const inferred = inferStructuredOutcome(action, resultText);
+    return {
+      result_text: resultText,
+      ...inferred,
+      url_changed: null,
+    };
+  }
+
   globalScope.BropilotTools = {
     executeAction,
+    executeActionDetailed,
   };
 })(self);

@@ -14,63 +14,94 @@ def _build_output(command: str, info: dict) -> Output:
     }
 
 
+def _require_non_empty(value: str, field_name: str) -> str:
+    cleaned = value.strip()
+    if not cleaned:
+        raise ValueError(f"{field_name} cannot be empty")
+    return cleaned
+
+
 @tool
 def getPageContent() -> Output:
-    """Returns ONLY the visible human-readable text on the page, NOT HTML."""
+    """Returns visible human-readable page text (not HTML).
+
+    Use when you need quick page understanding. Avoid repeating without an action in between.
+    """
     return _build_output("get_page_content", {})
 
 
 @tool
 def getPageClickables() -> Output:
-    """Returns all clickable elements (buttons, links) present on the page."""
+    """Returns clickable controls (buttons and links).
+
+    Prefer before clickElement* when the target is uncertain.
+    """
     return _build_output("get_page_clickables", {})
 
 
 @tool
 def getPageLinks() -> Output:
-    """Returns all link elements (> a <) present on the page, with their text and URLs."""
+    """Returns all anchor links with visible text and URL.
+
+    Prefer for navigation tasks; use getPageClickables for non-link controls.
+    """
     return _build_output("get_page_links", {})
 
 
 @tool
 def getPageInputs() -> Output:
-    """Returns all page's textarea and input fields."""
+    """Returns textarea and input fields.
+
+    Prefer before typeWith* when no reliable selector evidence exists yet.
+    """
     return _build_output("get_page_inputs", {})
 
 
 @tool
 def clickElementWithCSSSelector(selector: str) -> Output:
-    """Returns after clicks CSS selected element."""
+    """Click a CSS-selected element.
+
+    Use only when selector is known/stable. Prefer regexp click when text is known but selector is not.
+    """
+    selector = _require_non_empty(selector, "selector")
     return _build_output("click_element_with_css_selector", {"selector": selector})
 
 
 @tool
 def clickElementWithRegexp(regex: str) -> Output:
-    """Returns after clicks a regexp matched element. The regex is evaluated natively against the element's innerText, value, placeholder, aria-label, title, id, name, href, and alt. Ex: /Submit/i or /search_icon/i"""
+    """Click an element matched by regex over key element text/attributes.
+
+    Good default click tool when visible text is known.
+    """
+    regex = _require_non_empty(regex, "regex")
     return _build_output("click_element_with_regexp", {"regex": regex})
 
 
 @tool
 def openNewTab(url: str = "about:blank") -> Output:
     """Returns after opens the url in a new tab, making it the active tab."""
+    url = _require_non_empty(url, "url")
     return _build_output("open_new_tab", {"url": url})
 
 
 @tool
 def createNewTab(url: str = "about:blank") -> Output:
     """Returns after creates tab with URL in background (does not switch to it)."""
+    url = _require_non_empty(url, "url")
     return _build_output("create_new_tab", {"url": url})
 
 
 @tool
 def changeURL(url: str) -> Output:
     """Returns after changes the current tab's url."""
+    url = _require_non_empty(url, "url")
     return _build_output("change_url", {"url": url})
 
 
 @tool
 def scrollWithRegexp(regex: str) -> Output:
     """Returns after scrolling to an element. The regex is evaluated natively against the element's innerText, value, placeholder, aria-label, title, id, name, href, and alt."""
+    regex = _require_non_empty(regex, "regex")
     return _build_output("scroll_with_regexp", {"regex": regex})
 
 
@@ -94,7 +125,12 @@ def scrollDistance(direction: str = "down", amount: Union[int, str] = 600) -> Ou
 
 @tool
 def typeWithCSSSelector(selector: str, text: str, pressEnter: bool = True) -> Output:
-    """Returns after types into CSS selected element."""
+    """Type into an input selected by CSS selector.
+
+    Use when selector is explicit and trustworthy; otherwise prefer typeWithRegexp.
+    """
+    selector = _require_non_empty(selector, "selector")
+    text = _require_non_empty(text, "text")
     return _build_output(
         "type_with_css_selector",
         {
@@ -107,7 +143,12 @@ def typeWithCSSSelector(selector: str, text: str, pressEnter: bool = True) -> Ou
 
 @tool
 def typeWithRegexp(regex: str, text: str, pressEnter: bool = True) -> Output:
-    """Returns after types into regexp selected element. The regex is evaluated natively against the element's innerText, value, placeholder, aria-label, title, id, name, href, and alt. It automatically finds the precise input control inside the match. IF press enter is true, the extension will submit the input automatically use this 9/10 times."""
+    """Type into an input matched by regex over visible/input-related attributes.
+
+    Strong default for forms. Keep pressEnter=True for submit flows unless user requested draft entry.
+    """
+    regex = _require_non_empty(regex, "regex")
+    text = _require_non_empty(text, "text")
     return _build_output(
         "type_with_regexp",
         {
@@ -121,6 +162,7 @@ def typeWithRegexp(regex: str, text: str, pressEnter: bool = True) -> Output:
 @tool
 def respondToUser(message: str) -> Output:
     """Returns after messages user directly in the chat UI. Use this to ask questions or provide status updates."""
+    message = _require_non_empty(message, "message")
     return _build_output("respond_to_user", {"message": message})
 
 
@@ -164,7 +206,10 @@ def wait(milliseconds: Union[int, str] = 1000) -> Output:
 
 @tool
 def getPageHtml(maxChars: Union[int, str] = 60000) -> Output:
-    """Request current page HTML from the frontend. USE VERY SPARINGLY as it is slow. Use specific gets instead."""
+    """Request page HTML from frontend.
+
+    Use sparingly for selector debugging or when targeted getter outputs are insufficient.
+    """
     max_chars = int(maxChars) if isinstance(maxChars, str) else maxChars
     if max_chars < 1000:
         max_chars = 1000
@@ -175,8 +220,47 @@ def getPageHtml(maxChars: Union[int, str] = 60000) -> Output:
 
 @tool
 def getElementsBySelector(selector: str) -> Output:
-    """Returns a list of DOM elements matching the CSS selector (with tag, id, classes, and text) without downloading the full HTML. Often a more performant alternative to getPageHtml."""
+    """Return DOM elements matching a CSS selector with compact metadata.
+
+    Prefer over getPageHtml when you only need specific structure checks.
+    """
+    selector = _require_non_empty(selector, "selector")
     return _build_output("get_elements_by_selector", {"selector": selector})
+
+
+@tool
+def getInteractiveElements(limit: Union[int, str] = 50) -> Output:
+    """Return a compact inventory of visible interactive elements.
+
+    Use for discovery when selectors are unclear before attempting click/type actions.
+    """
+    max_items = int(limit) if isinstance(limit, str) else limit
+    if max_items < 1:
+        max_items = 1
+    if max_items > 200:
+        max_items = 200
+    return _build_output("get_interactive_elements", {"limit": max_items})
+
+
+@tool
+def findBestElementMatch(query: str, limit: Union[int, str] = 5) -> Output:
+    """Find and rank likely interactive targets for a natural-language query.
+
+    Use when direct regex/selector targeting repeatedly fails.
+    """
+    query_text = _require_non_empty(query, "query")
+    max_items = int(limit) if isinstance(limit, str) else limit
+    if max_items < 1:
+        max_items = 1
+    if max_items > 50:
+        max_items = 50
+    return _build_output(
+        "find_best_element_match",
+        {
+            "query": query_text,
+            "limit": max_items,
+        },
+    )
 
 
 ALL_TOOLS = [
@@ -202,4 +286,6 @@ ALL_TOOLS = [
     wait,
     getPageHtml,
     getElementsBySelector,
+    getInteractiveElements,
+    findBestElementMatch,
 ]

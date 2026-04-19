@@ -1,6 +1,8 @@
 from typing import Optional, Any, Literal
 from pydantic import BaseModel
 
+WsCompletionReason = Literal["task_complete", "blocked", "max_steps"]
+
 class Query(BaseModel):
     query: str
     current_url: str 
@@ -30,4 +32,14 @@ class WsToolResult(BaseModel):
     result_text: str
     current_url: Optional[str] = None
     html: Optional[str] = None
+    result_meta: Optional[dict[str, Any]] = None
+
+
+class WsComplete(BaseModel):
+    type: Literal["complete"]
+    request_id: str
+    total_steps: int
+    time_taken: float
+    reason: WsCompletionReason
+    message: str
 
