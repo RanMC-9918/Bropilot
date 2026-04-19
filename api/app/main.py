@@ -30,6 +30,17 @@ WS_MAX_STEPS = int(os.getenv("WS_MAX_STEPS", "50"))
 WS_STEP_TIMEOUT_SECONDS = int(os.getenv("WS_STEP_TIMEOUT_SECONDS", "45"))
 WS_STAGNATION_STEPS = int(os.getenv("WS_STAGNATION_STEPS", "3"))
 WS_REPEAT_TOOL_LIMIT = int(os.getenv("WS_REPEAT_TOOL_LIMIT", "2"))
+WS_SELECTOR_FAILURE_LIMIT = int(os.getenv("WS_SELECTOR_FAILURE_LIMIT", "2"))
+
+SELECTOR_TOOLS = {
+    "clickElementWithCSSSelector",
+    "typeWithCSSSelector",
+    "hoverElementWithCSSSelector",
+    "doubleClickElementWithCSSSelector",
+    "rightClickElementWithCSSSelector",
+    "scrollElementToCenter",
+    "dragAndDropWithCSSSelector",
+}
 
 if PROVIDER not in {"google", "ollama"}:
     raise RuntimeError("PROVIDER must be either 'google' or 'ollama'.")
@@ -85,11 +96,13 @@ WS_SYSTEM_PROMPT = (
     "LIMIT getPageContent use when possible and predict button presses and tool calls by CHAINING them.\n"
     "Before click/type/scroll, verify target existence from latest evidence unless intentionally doing exploratory recovery.\n"
     "Use regexp selectors to interact with elements before loading if you can predict what's on the next page.\n"
+    "Prefer semantic selector tools first; use coordinate or advanced interaction tools only after selector methods fail repeatedly.\n"
     "Avoid using getPageHtml unless strictly necessary, it is very slow. Use specific gets instead.\n"
     "Use only provided tools.\n"
     "Assume the page is ALWAYS fully loaded. Never wait or refresh to let a page load.\n"
     "Do NOT cycle through getters endlessly. If you don't see what you need, take action (e.g. click 'Play') rather than just waiting.\n"
     "If recent actions are repeating without progress, change strategy instead of retrying the same call.\n"
+    "If selector-based actions fail repeatedly, escalate using getInteractiveElements, findBestElementMatch, hoverElementWithCSSSelector, scrollElementToCenter, dragAndDropWithCSSSelector, or clickAtCoordinates.\n"
     "If the task is complete or blocked, use respondToUser to message the user or return plain text with a concise reason."
 )
 
@@ -307,6 +320,7 @@ async def websocket_root(websocket: WebSocket):
         stagnation_steps = 0
         recent_calls: deque[tuple[str, str]] = deque(maxlen=6)
         last_result_fp = result_fingerprint("")
+        selector_failure_streak = 0
         
         chat_history = [
             SystemMessage(content=WS_SYSTEM_PROMPT),
@@ -488,6 +502,11 @@ async def websocket_root(websocket: WebSocket):
                 )
                 last_result_fp = current_fp
 
+                if tool_name in SELECTOR_TOOLS and not result_message.success:
+                    selector_failure_streak += 1
+                elif made_progress:
+                    selector_failure_streak = 0
+
                 if made_progress:
                     stagnation_steps = 0
                 else:
@@ -512,6 +531,12 @@ async def websocket_root(websocket: WebSocket):
                 content_str = note
                 if latest_url != previous_url:
                     content_str += f"\\n[State check: URL changed to: {latest_url}]"
+                if selector_failure_streak >= WS_SELECTOR_FAILURE_LIMIT:
+                    content_str += (
+                        "\\n[Escalation hint: selector-based actions are failing repeatedly. "
+                        "Switch strategy with getInteractiveElements/findBestElementMatch, then use "
+                        "hover/scroll-to-center/drag-drop/click-at-coordinates if needed.]"
+                    )
                 if isinstance(result_message.result_meta, dict):
                     meta = result_message.result_meta
                     content_str += (

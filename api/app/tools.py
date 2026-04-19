@@ -21,6 +21,15 @@ def _require_non_empty(value: str, field_name: str) -> str:
     return cleaned
 
 
+def _clamp_int(value: Union[int, str], *, field_name: str, minimum: int, maximum: int) -> int:
+    parsed = int(value) if isinstance(value, str) else int(value)
+    if parsed < minimum:
+        return minimum
+    if parsed > maximum:
+        return maximum
+    return parsed
+
+
 @tool
 def getPageContent() -> Output:
     """Returns visible human-readable page text (not HTML).
@@ -263,6 +272,65 @@ def findBestElementMatch(query: str, limit: Union[int, str] = 5) -> Output:
     )
 
 
+@tool
+def hoverElementWithCSSSelector(selector: str) -> Output:
+    """Hover over a CSS-selected element.
+
+    Use to reveal menus/tooltips before a follow-up click.
+    """
+    selector = _require_non_empty(selector, "selector")
+    return _build_output("hover_element_with_css_selector", {"selector": selector})
+
+
+@tool
+def doubleClickElementWithCSSSelector(selector: str) -> Output:
+    """Double-click a CSS-selected element.
+
+    Use when single click does not trigger the required UI behavior.
+    """
+    selector = _require_non_empty(selector, "selector")
+    return _build_output("double_click_element_with_css_selector", {"selector": selector})
+
+
+@tool
+def rightClickElementWithCSSSelector(selector: str) -> Output:
+    """Open context menu via right-click on a CSS-selected element."""
+    selector = _require_non_empty(selector, "selector")
+    return _build_output("right_click_element_with_css_selector", {"selector": selector})
+
+
+@tool
+def clickAtCoordinates(x: Union[int, str], y: Union[int, str]) -> Output:
+    """Click at viewport coordinates.
+
+    Fallback for complex UIs when selectors are unavailable.
+    """
+    x_pos = _clamp_int(x, field_name="x", minimum=0, maximum=20000)
+    y_pos = _clamp_int(y, field_name="y", minimum=0, maximum=20000)
+    return _build_output("click_at_coordinates", {"x": x_pos, "y": y_pos})
+
+
+@tool
+def dragAndDropWithCSSSelector(sourceSelector: str, targetSelector: str) -> Output:
+    """Drag from source selector and drop onto target selector."""
+    source = _require_non_empty(sourceSelector, "sourceSelector")
+    target = _require_non_empty(targetSelector, "targetSelector")
+    return _build_output(
+        "drag_and_drop_with_css_selector",
+        {
+            "sourceSelector": source,
+            "targetSelector": target,
+        },
+    )
+
+
+@tool
+def scrollElementToCenter(selector: str) -> Output:
+    """Scroll the matching element into viewport center."""
+    selector = _require_non_empty(selector, "selector")
+    return _build_output("scroll_element_to_center", {"selector": selector})
+
+
 ALL_TOOLS = [
     getPageContent,
     getPageClickables,
@@ -288,4 +356,10 @@ ALL_TOOLS = [
     getElementsBySelector,
     getInteractiveElements,
     findBestElementMatch,
+    hoverElementWithCSSSelector,
+    doubleClickElementWithCSSSelector,
+    rightClickElementWithCSSSelector,
+    clickAtCoordinates,
+    dragAndDropWithCSSSelector,
+    scrollElementToCenter,
 ]

@@ -62,8 +62,17 @@
       elementCount = countListLines(body);
     }
 
+    const elementActionCommands = [
+      "click_",
+      "type_",
+      "scroll_",
+      "hover_",
+      "double_click_",
+      "right_click_",
+      "drag_and_drop_",
+    ];
     const elementFound =
-      command.startsWith("click_") || command.startsWith("type_") || command.startsWith("scroll_")
+      elementActionCommands.some((prefix) => command.startsWith(prefix))
         ? !isFailure
         : null;
 
@@ -420,6 +429,151 @@
     return result || { ok: false, reason: "Unknown scroll error." };
   }
 
+  async function runHoverBySelector(tabId, selector) {
+    const [{ result }] = await chrome.scripting.executeScript({
+      target: { tabId },
+      func: (cssSelector) => {
+        const target = document.querySelector(cssSelector);
+        if (!target) return { ok: false, reason: "No element matched selector." };
+        target.scrollIntoView({ behavior: "smooth", block: "center" });
+        target.dispatchEvent(new MouseEvent("mouseover", { bubbles: true, cancelable: true, view: window }));
+        target.dispatchEvent(new MouseEvent("mouseenter", { bubbles: true, cancelable: true, view: window }));
+        target.dispatchEvent(new MouseEvent("mousemove", { bubbles: true, cancelable: true, view: window }));
+        return { ok: true };
+      },
+      args: [selector],
+    });
+    return result || { ok: false, reason: "Unknown hover error." };
+  }
+
+  async function runDoubleClickBySelector(tabId, selector) {
+    const [{ result }] = await chrome.scripting.executeScript({
+      target: { tabId },
+      func: (cssSelector) => {
+        const target = document.querySelector(cssSelector);
+        if (!target) return { ok: false, reason: "No element matched selector." };
+        target.scrollIntoView({ behavior: "smooth", block: "center" });
+        target.dispatchEvent(new MouseEvent("dblclick", { bubbles: true, cancelable: true, view: window }));
+        return { ok: true };
+      },
+      args: [selector],
+    });
+    return result || { ok: false, reason: "Unknown double-click error." };
+  }
+
+  async function runRightClickBySelector(tabId, selector) {
+    const [{ result }] = await chrome.scripting.executeScript({
+      target: { tabId },
+      func: (cssSelector) => {
+        const target = document.querySelector(cssSelector);
+        if (!target) return { ok: false, reason: "No element matched selector." };
+        target.scrollIntoView({ behavior: "smooth", block: "center" });
+        const evt = new MouseEvent("contextmenu", {
+          bubbles: true,
+          cancelable: true,
+          view: window,
+          button: 2,
+          buttons: 2,
+        });
+        target.dispatchEvent(evt);
+        return { ok: true };
+      },
+      args: [selector],
+    });
+    return result || { ok: false, reason: "Unknown right-click error." };
+  }
+
+  async function runClickAtCoordinates(tabId, x, y) {
+    const [{ result }] = await chrome.scripting.executeScript({
+      target: { tabId },
+      func: (xPos, yPos) => {
+        const xCoord = Number(xPos);
+        const yCoord = Number(yPos);
+        if (!Number.isFinite(xCoord) || !Number.isFinite(yCoord)) {
+          return { ok: false, reason: "Invalid coordinates." };
+        }
+
+        const el = document.elementFromPoint(xCoord, yCoord);
+        if (!el) return { ok: false, reason: "No element at coordinates." };
+
+        const mouseDown = new MouseEvent("mousedown", {
+          bubbles: true,
+          cancelable: true,
+          view: window,
+          clientX: xCoord,
+          clientY: yCoord,
+          button: 0,
+          buttons: 1,
+        });
+        const mouseUp = new MouseEvent("mouseup", {
+          bubbles: true,
+          cancelable: true,
+          view: window,
+          clientX: xCoord,
+          clientY: yCoord,
+          button: 0,
+          buttons: 0,
+        });
+        const clickEvt = new MouseEvent("click", {
+          bubbles: true,
+          cancelable: true,
+          view: window,
+          clientX: xCoord,
+          clientY: yCoord,
+          button: 0,
+          buttons: 0,
+        });
+
+        el.dispatchEvent(mouseDown);
+        el.dispatchEvent(mouseUp);
+        el.dispatchEvent(clickEvt);
+        return { ok: true, tag: el.tagName.toLowerCase() };
+      },
+      args: [x, y],
+    });
+    return result || { ok: false, reason: "Unknown coordinate click error." };
+  }
+
+  async function runDragAndDropBySelector(tabId, sourceSelector, targetSelector) {
+    const [{ result }] = await chrome.scripting.executeScript({
+      target: { tabId },
+      func: (fromSelector, toSelector) => {
+        const source = document.querySelector(fromSelector);
+        const target = document.querySelector(toSelector);
+        if (!source) return { ok: false, reason: "No source element matched selector." };
+        if (!target) return { ok: false, reason: "No target element matched selector." };
+
+        source.scrollIntoView({ behavior: "smooth", block: "center" });
+        target.scrollIntoView({ behavior: "smooth", block: "center" });
+
+        const dataTransfer = new DataTransfer();
+        source.dispatchEvent(new DragEvent("dragstart", { bubbles: true, cancelable: true, dataTransfer }));
+        target.dispatchEvent(new DragEvent("dragenter", { bubbles: true, cancelable: true, dataTransfer }));
+        target.dispatchEvent(new DragEvent("dragover", { bubbles: true, cancelable: true, dataTransfer }));
+        target.dispatchEvent(new DragEvent("drop", { bubbles: true, cancelable: true, dataTransfer }));
+        source.dispatchEvent(new DragEvent("dragend", { bubbles: true, cancelable: true, dataTransfer }));
+
+        return { ok: true };
+      },
+      args: [sourceSelector, targetSelector],
+    });
+    return result || { ok: false, reason: "Unknown drag-drop error." };
+  }
+
+  async function runScrollElementToCenter(tabId, selector) {
+    const [{ result }] = await chrome.scripting.executeScript({
+      target: { tabId },
+      func: (cssSelector) => {
+        const target = document.querySelector(cssSelector);
+        if (!target) return { ok: false, reason: "No element matched selector." };
+        target.scrollIntoView({ behavior: "smooth", block: "center", inline: "center" });
+        return { ok: true };
+      },
+      args: [selector],
+    });
+    return result || { ok: false, reason: "Unknown scroll-to-center error." };
+  }
+
   async function runGetPageElements(tabId, type) {
     const [{ result }] = await chrome.scripting.executeScript({
       target: { tabId },
@@ -770,6 +924,50 @@
       return result.ok
         ? `Scrolled to match: ${result.match}`
         : `Scroll failed: ${result.reason}`;
+    }
+
+    if (action.command === "hover_element_with_css_selector") {
+      const selector = ensureString(info.selector).trim();
+      if (!selector) return "Hover failed: selector is missing.";
+      const result = await runHoverBySelector(tabId, selector);
+      return result.ok ? `Hovered selector: ${selector}` : `Hover failed: ${result.reason}`;
+    }
+
+    if (action.command === "double_click_element_with_css_selector") {
+      const selector = ensureString(info.selector).trim();
+      if (!selector) return "Double click failed: selector is missing.";
+      const result = await runDoubleClickBySelector(tabId, selector);
+      return result.ok ? `Double clicked selector: ${selector}` : `Double click failed: ${result.reason}`;
+    }
+
+    if (action.command === "right_click_element_with_css_selector") {
+      const selector = ensureString(info.selector).trim();
+      if (!selector) return "Right click failed: selector is missing.";
+      const result = await runRightClickBySelector(tabId, selector);
+      return result.ok ? `Right clicked selector: ${selector}` : `Right click failed: ${result.reason}`;
+    }
+
+    if (action.command === "click_at_coordinates") {
+      const x = Number(info.x);
+      const y = Number(info.y);
+      if (!Number.isFinite(x) || !Number.isFinite(y)) return "Coordinate click failed: x and y are required.";
+      const result = await runClickAtCoordinates(tabId, x, y);
+      return result.ok ? `Clicked coordinates: (${Math.round(x)}, ${Math.round(y)})` : `Coordinate click failed: ${result.reason}`;
+    }
+
+    if (action.command === "drag_and_drop_with_css_selector") {
+      const source = ensureString(info.sourceSelector).trim();
+      const target = ensureString(info.targetSelector).trim();
+      if (!source || !target) return "Drag and drop failed: sourceSelector and targetSelector are required.";
+      const result = await runDragAndDropBySelector(tabId, source, target);
+      return result.ok ? `Dragged from ${source} to ${target}` : `Drag and drop failed: ${result.reason}`;
+    }
+
+    if (action.command === "scroll_element_to_center") {
+      const selector = ensureString(info.selector).trim();
+      if (!selector) return "Scroll to center failed: selector is missing.";
+      const result = await runScrollElementToCenter(tabId, selector);
+      return result.ok ? `Scrolled selector to center: ${selector}` : `Scroll to center failed: ${result.reason}`;
     }
 
     if (action.command === "respond_to_user") {
