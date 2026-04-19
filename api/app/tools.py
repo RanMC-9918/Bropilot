@@ -30,6 +30,13 @@ def _clamp_int(value: Union[int, str], *, field_name: str, minimum: int, maximum
     return parsed
 
 
+def _normalize_mouse_mode(mouseMode: str = "auto") -> str:
+    mode = (mouseMode or "auto").strip().lower()
+    if mode not in {"auto", "synthetic", "cdp"}:
+        return "auto"
+    return mode
+
+
 @tool
 def getPageContent() -> Output:
     """Returns visible human-readable page text (not HTML).
@@ -273,45 +280,70 @@ def findBestElementMatch(query: str, limit: Union[int, str] = 5) -> Output:
 
 
 @tool
-def hoverElementWithCSSSelector(selector: str) -> Output:
+def hoverElementWithCSSSelector(selector: str, mouseMode: str = "auto") -> Output:
     """Hover over a CSS-selected element.
 
     Use to reveal menus/tooltips before a follow-up click.
     """
     selector = _require_non_empty(selector, "selector")
-    return _build_output("hover_element_with_css_selector", {"selector": selector})
+    return _build_output(
+        "hover_element_with_css_selector",
+        {
+            "selector": selector,
+            "mouseMode": _normalize_mouse_mode(mouseMode),
+        },
+    )
 
 
 @tool
-def doubleClickElementWithCSSSelector(selector: str) -> Output:
+def doubleClickElementWithCSSSelector(selector: str, mouseMode: str = "auto") -> Output:
     """Double-click a CSS-selected element.
 
     Use when single click does not trigger the required UI behavior.
     """
     selector = _require_non_empty(selector, "selector")
-    return _build_output("double_click_element_with_css_selector", {"selector": selector})
+    return _build_output(
+        "double_click_element_with_css_selector",
+        {
+            "selector": selector,
+            "mouseMode": _normalize_mouse_mode(mouseMode),
+        },
+    )
 
 
 @tool
-def rightClickElementWithCSSSelector(selector: str) -> Output:
+def rightClickElementWithCSSSelector(selector: str, mouseMode: str = "auto") -> Output:
     """Open context menu via right-click on a CSS-selected element."""
     selector = _require_non_empty(selector, "selector")
-    return _build_output("right_click_element_with_css_selector", {"selector": selector})
+    return _build_output(
+        "right_click_element_with_css_selector",
+        {
+            "selector": selector,
+            "mouseMode": _normalize_mouse_mode(mouseMode),
+        },
+    )
 
 
 @tool
-def clickAtCoordinates(x: Union[int, str], y: Union[int, str]) -> Output:
+def clickAtCoordinates(x: Union[int, str], y: Union[int, str], mouseMode: str = "auto") -> Output:
     """Click at viewport coordinates.
 
     Fallback for complex UIs when selectors are unavailable.
     """
     x_pos = _clamp_int(x, field_name="x", minimum=0, maximum=20000)
     y_pos = _clamp_int(y, field_name="y", minimum=0, maximum=20000)
-    return _build_output("click_at_coordinates", {"x": x_pos, "y": y_pos})
+    return _build_output(
+        "click_at_coordinates",
+        {
+            "x": x_pos,
+            "y": y_pos,
+            "mouseMode": _normalize_mouse_mode(mouseMode),
+        },
+    )
 
 
 @tool
-def dragAndDropWithCSSSelector(sourceSelector: str, targetSelector: str) -> Output:
+def dragAndDropWithCSSSelector(sourceSelector: str, targetSelector: str, mouseMode: str = "auto") -> Output:
     """Drag from source selector and drop onto target selector."""
     source = _require_non_empty(sourceSelector, "sourceSelector")
     target = _require_non_empty(targetSelector, "targetSelector")
@@ -320,6 +352,7 @@ def dragAndDropWithCSSSelector(sourceSelector: str, targetSelector: str) -> Outp
         {
             "sourceSelector": source,
             "targetSelector": target,
+            "mouseMode": _normalize_mouse_mode(mouseMode),
         },
     )
 

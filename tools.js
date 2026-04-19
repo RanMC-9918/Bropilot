@@ -89,6 +89,134 @@
     };
   }
 
+  function prefersCdpMouse(info) {
+    const mode = String((info && info.mouseMode) || "auto").toLowerCase();
+    return mode === "cdp";
+  }
+
+  function debuggerTarget(tabId) {
+    return { tabId };
+  }
+
+  function cdpAttach(tabId) {
+    return new Promise((resolve, reject) => {
+      chrome.debugger.attach(debuggerTarget(tabId), "1.3", () => {
+        if (chrome.runtime.lastError) {
+          reject(new Error(`CDP attach failed: ${chrome.runtime.lastError.message}`));
+          return;
+        }
+        resolve(true);
+      });
+    });
+  }
+
+  function cdpDetach(tabId) {
+    return new Promise((resolve) => {
+      chrome.debugger.detach(debuggerTarget(tabId), () => resolve(true));
+    });
+  }
+
+  function cdpCommand(tabId, method, params) {
+    return new Promise((resolve, reject) => {
+      chrome.debugger.sendCommand(debuggerTarget(tabId), method, params, (result) => {
+        if (chrome.runtime.lastError) {
+          reject(new Error(`CDP ${method} failed: ${chrome.runtime.lastError.message}`));
+          return;
+        }
+        resolve(result || {});
+      });
+    });
+  }
+
+  async function withCdpSession(tabId, fn) {
+    await cdpAttach(tabId);
+    try {
+      return await fn();
+    } finally {
+      await cdpDetach(tabId);
+    }
+  }
+
+  async function getElementCenter(tabId, selector) {
+    const [{ result }] = await chrome.scripting.executeScript({
+      target: { tabId },
+      func: (cssSelector) => {
+        const target = document.querySelector(cssSelector);
+        if (!target) return { ok: false, reason: "No element matched selector." };
+        target.scrollIntoView({ behavior: "smooth", block: "center", inline: "center" });
+        const rect = target.getBoundingClientRect();
+        return {
+          ok: true,
+          x: Math.round(rect.left + rect.width / 2),
+          y: Math.round(rect.top + rect.height / 2),
+        };
+      },
+      args: [selector],
+    });
+    return result || { ok: false, reason: "Unable to resolve element center." };
+  }
+
+  async function cdpMove(tabId, x, y) {
+    await cdpCommand(tabId, "Input.dispatchMouseEvent", {
+      type: "mouseMoved",
+      x,
+      y,
+      button: "none",
+    });
+  }
+
+  async function cdpClick(tabId, x, y, button = "left", clickCount = 1) {
+    await cdpMove(tabId, x, y);
+    await cdpCommand(tabId, "Input.dispatchMouseEvent", {
+      type: "mousePressed",
+      x,
+      y,
+      button,
+      clickCount,
+    });
+    await cdpCommand(tabId, "Input.dispatchMouseEvent", {
+      type: "mouseReleased",
+      x,
+      y,
+      button,
+      clickCount,
+    });
+  }
+
+  async function cdpDrag(tabId, source, target) {
+    await cdpMove(tabId, source.x, source.y);
+    await cdpCommand(tabId, "Input.dispatchMouseEvent", {
+      type: "mousePressed",
+      x: source.x,
+      y: source.y,
+      button: "left",
+      buttons: 1,
+      clickCount: 1,
+    });
+
+    const steps = 6;
+    for (let i = 1; i <= steps; i += 1) {
+      const x = Math.round(source.x + ((target.x - source.x) * i) / steps);
+      const y = Math.round(source.y + ((target.y - source.y) * i) / steps);
+      await cdpCommand(tabId, "Input.dispatchMouseEvent", {
+        type: "mouseMoved",
+        x,
+        y,
+        button: "left",
+        buttons: 1,
+      });
+    }
+
+    await cdpCommand(tabId, "Input.dispatchMouseEvent", {
+      type: "mouseReleased",
+      x: target.x,
+      y: target.y,
+      button: "left",
+      buttons: 0,
+      clickCount: 1,
+    });
+  }
+
   async function waitForTabLoad(tabId, timeoutMs = 15000) {
     return new Promise((resolve) => {
       let settled = false;
@@ -574,6 +702,52 @@
     return result || { ok: false, reason: "Unknown scroll-to-center error." };
   }
 
+  async function runCdpHoverBySelector(tabId, selector) {
+    const center = await getElementCenter(tabId, selector);
+    if (!center.ok) return center;
+    await withCdpSession(tabId, async () => {
+      await cdpMove(tabId, center.x, center.y);
+    });
+    return { ok: true };
+  }
+
+  async function runCdpDoubleClickBySelector(tabId, selector) {
+    const center = await getElementCenter(tabId, selector);
+    if (!center.ok) return center;
+    await withCdpSession(tabId, async () => {
+      await cdpClick(tabId, center.x, center.y, "left", 2);
+    });
+    return { ok: true };
+  }
+
+  async function runCdpRightClickBySelector(tabId, selector) {
+    const center = await getElementCenter(tabId, selector);
+    if (!center.ok) return center;
+    await withCdpSession(tabId, async () => {
+      await cdpClick(tabId, center.x, center.y, "right", 1);
+    });
+    return { ok: true };
+  }
+
+  async function runCdpClickAtCoordinates(tabId, x, y) {
+    await withCdpSession(tabId, async () => {
+      await cdpClick(tabId, x, y, "left", 1);
+    });
+    return { ok: true };
+  }
+
+  async function runCdpDragAndDropBySelector(tabId, sourceSelector, targetSelector) {
+    const source = await getElementCenter(tabId, sourceSelector);
+    if (!source.ok) return { ok: false, reason: `Source failed: ${source.reason}` };
+    const target = await getElementCenter(tabId, targetSelector);
+    if (!target.ok) return { ok: false, reason: `Target failed: ${target.reason}` };
+
+    await withCdpSession(tabId, async () => {
+      await cdpDrag(tabId, source, target);
+    });
+    return { ok: true };
+  }
+
   async function runGetPageElements(tabId, type) {
     const [{ result }] = await chrome.scripting.executeScript({
       target: { tabId },
@@ -929,6 +1103,17 @@
     if (action.command === "hover_element_with_css_selector") {
       const selector = ensureString(info.selector).trim();
       if (!selector) return "Hover failed: selector is missing.";
+      if (prefersCdpMouse(info)) {
+        try {
+          const cdpResult = await runCdpHoverBySelector(tabId, selector);
+          if (cdpResult.ok) return `Hovered selector with CDP: ${selector}`;
+        } catch (error) {
+          const fallback = await runHoverBySelector(tabId, selector);
+          return fallback.ok
+            ? `Hovered selector: ${selector} (CDP fallback: ${ensureString(error?.message) || "failed"})`
+            : `Hover failed: ${fallback.reason}`;
+        }
+      }
       const result = await runHoverBySelector(tabId, selector);
       return result.ok ? `Hovered selector: ${selector}` : `Hover failed: ${result.reason}`;
     }
@@ -936,6 +1121,17 @@
     if (action.command === "double_click_element_with_css_selector") {
       const selector = ensureString(info.selector).trim();
       if (!selector) return "Double click failed: selector is missing.";
+      if (prefersCdpMouse(info)) {
+        try {
+          const cdpResult = await runCdpDoubleClickBySelector(tabId, selector);
+          if (cdpResult.ok) return `Double clicked selector with CDP: ${selector}`;
+        } catch (error) {
+          const fallback = await runDoubleClickBySelector(tabId, selector);
+          return fallback.ok
+            ? `Double clicked selector: ${selector} (CDP fallback: ${ensureString(error?.message) || "failed"})`
+            : `Double click failed: ${fallback.reason}`;
+        }
+      }
       const result = await runDoubleClickBySelector(tabId, selector);
       return result.ok ? `Double clicked selector: ${selector}` : `Double click failed: ${result.reason}`;
     }
@@ -943,6 +1139,17 @@
     if (action.command === "right_click_element_with_css_selector") {
       const selector = ensureString(info.selector).trim();
       if (!selector) return "Right click failed: selector is missing.";
+      if (prefersCdpMouse(info)) {
+        try {
+          const cdpResult = await runCdpRightClickBySelector(tabId, selector);
+          if (cdpResult.ok) return `Right clicked selector with CDP: ${selector}`;
+        } catch (error) {
+          const fallback = await runRightClickBySelector(tabId, selector);
+          return fallback.ok
+            ? `Right clicked selector: ${selector} (CDP fallback: ${ensureString(error?.message) || "failed"})`
+            : `Right click failed: ${fallback.reason}`;
+        }
+      }
       const result = await runRightClickBySelector(tabId, selector);
       return result.ok ? `Right clicked selector: ${selector}` : `Right click failed: ${result.reason}`;
     }
@@ -951,7 +1158,21 @@
       const x = Number(info.x);
       const y = Number(info.y);
       if (!Number.isFinite(x) || !Number.isFinite(y)) return "Coordinate click failed: x and y are required.";
-      const result = await runClickAtCoordinates(tabId, x, y);
+      let result;
+      if (prefersCdpMouse(info)) {
+        try {
+          const cdpResult = await runCdpClickAtCoordinates(tabId, x, y);
+          if (cdpResult.ok) {
+            return `Clicked coordinates with CDP: (${Math.round(x)}, ${Math.round(y)})`;
+          }
+        } catch (error) {
+          result = await runClickAtCoordinates(tabId, x, y);
+          return result.ok
+            ? `Clicked coordinates: (${Math.round(x)}, ${Math.round(y)}) (CDP fallback: ${ensureString(error?.message) || "failed"})`
+            : `Coordinate click failed: ${result.reason}`;
+        }
+      }
+      result = await runClickAtCoordinates(tabId, x, y);
       return result.ok ? `Clicked coordinates: (${Math.round(x)}, ${Math.round(y)})` : `Coordinate click failed: ${result.reason}`;
     }
 
@@ -959,6 +1180,17 @@
       const source = ensureString(info.sourceSelector).trim();
       const target = ensureString(info.targetSelector).trim();
       if (!source || !target) return "Drag and drop failed: sourceSelector and targetSelector are required.";
+      if (prefersCdpMouse(info)) {
+        try {
+          const cdpResult = await runCdpDragAndDropBySelector(tabId, source, target);
+          if (cdpResult.ok) return `Dragged with CDP from ${source} to ${target}`;
+        } catch (error) {
+          const fallback = await runDragAndDropBySelector(tabId, source, target);
+          return fallback.ok
+            ? `Dragged from ${source} to ${target} (CDP fallback: ${ensureString(error?.message) || "failed"})`
+            : `Drag and drop failed: ${fallback.reason}`;
+        }
+      }
       const result = await runDragAndDropBySelector(tabId, source, target);
       return result.ok ? `Dragged from ${source} to ${target}` : `Drag and drop failed: ${result.reason}`;
     }
