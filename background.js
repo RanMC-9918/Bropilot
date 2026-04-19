@@ -8,6 +8,10 @@ const HISTORY_LIMIT = 120;
 const WS_CONNECT_TIMEOUT_MS = 10000;
 const WS_EVENT_TIMEOUT_MS = 50000;
 const WS_MAX_EVENTS = 300;
+const HTTP_REQUEST_TIMEOUT_MS = 30000;
+const TOOL_EXECUTION_TIMEOUT_MS = 120000;
+const REQUEST_OVERALL_TIMEOUT_MS = 300000;
+const WS_SESSION_MAX_DURATION_MS = 240000;
 
 let activeRequestId = null;
 
@@ -211,6 +215,24 @@ function closeSocket(ws) {
   }
 }
 
+async function withTimeout(promise, timeoutMs, message) {
+  let timerId = null;
+  try {
+    return await Promise.race([
+      Promise.resolve(promise),
+      new Promise((_, reject) => {
+        timerId = setTimeout(() => {
+          reject(new Error(message));
+        }, timeoutMs);
+      }),
+    ]);
+  } finally {
+    if (timerId) {
+      clearTimeout(timerId);
+    }
+  }
+}
+
 function toolSucceeded(action, toolText) {
   if (action.command === "error") return false;
   const text = String(toolText || "").toLowerCase();
@@ -218,15 +240,29 @@ function toolSucceeded(action, toolText) {
 }
 
 async function processMessageViaHttp(id, text, tabId, context) {
-  const response = await fetch(API_URL, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      query: text,
-      html: context.pageHtml,
-      current_url: context.pageUrl,
-    }),
-  });
+  const abortController = new AbortController();
+  const timeoutId = setTimeout(() => abortController.abort(), HTTP_REQUEST_TIMEOUT_MS);
+
+  let response;
+  try {
+    response = await fetch(API_URL, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        query: text,
+        html: context.pageHtml,
+        current_url: context.pageUrl,
+      }),
+      signal: abortController.signal,
+    });
+  } catch (error) {
+    if (error && error.name === "AbortError") {
+      throw new Error(`HTTP fallback timed out after ${HTTP_REQUEST_TIMEOUT_MS}ms`);
+    }
+    throw error;
+  } finally {
+    clearTimeout(timeoutId);
+  }
 
   if (!response.ok) {
     throw new Error(`API error: ${response.status}`);
@@ -258,7 +294,11 @@ async function processMessageViaHttp(id, text, tabId, context) {
         });
     }
 
-    const toolResult = await BropilotTools.executeActionDetailed(tabId, action);
+    const toolResult = await withTimeout(
+      BropilotTools.executeActionDetailed(tabId, action),
+      TOOL_EXECUTION_TIMEOUT_MS,
+      `Tool execution timed out after ${TOOL_EXECUTION_TIMEOUT_MS}ms`,
+    );
     const toolText = toolResult.result_text;
     
     if (action.command !== "respond_to_user") {
@@ -285,6 +325,7 @@ async function processMessageViaWebSocket(id, text, tabId, context) {
   const ws = await openWebSocket(WS_URL, WS_CONNECT_TIMEOUT_MS);
   let stepCount = 0;
   let sessionContext = context;
+  const sessionStartedAt = Date.now();
 
   try {
     sendSocketJson(ws, {
@@ -296,6 +337,10 @@ async function processMessageViaWebSocket(id, text, tabId, context) {
     });
 
     for (let eventCount = 0; eventCount < WS_MAX_EVENTS; eventCount += 1) {
+      if (Date.now() - sessionStartedAt > WS_SESSION_MAX_DURATION_MS) {
+        throw new Error(`WebSocket session timed out after ${WS_SESSION_MAX_DURATION_MS}ms`);
+      }
+
       const event = await waitForSocketMessage(ws, WS_EVENT_TIMEOUT_MS);
       if (!event || typeof event.type !== "string") {
         throw new Error("Malformed websocket event");
@@ -350,7 +395,11 @@ async function processMessageViaWebSocket(id, text, tabId, context) {
 
         try {
           const previousUrl = sessionContext.pageUrl;
-          const detailed = await BropilotTools.executeActionDetailed(tabId, action);
+          const detailed = await withTimeout(
+            BropilotTools.executeActionDetailed(tabId, action),
+            TOOL_EXECUTION_TIMEOUT_MS,
+            `Tool execution timed out after ${TOOL_EXECUTION_TIMEOUT_MS}ms`,
+          );
           toolText = detailed.result_text;
           success = Boolean(detailed.success);
           latestContext = await getPageContext(
@@ -451,37 +500,43 @@ async function processMessage({ requestId, text, source, tabId }) {
 
   activeRequestId = id;
 
-  await appendHistory({
-    id: `${id}:user`,
-    role: "user",
-    text,
-    source,
-    timestamp: nowIso(),
-  });
-
-  await setPendingRequest({ id, text, source, tabId, startedAt: nowIso() });
-  await appendHistory({
-    id: `${id}:thinking`,
-    role: "system",
-    text: "Assistant is thinking...",
-    timestamp: nowIso(),
-  });
-
   try {
-    const context = await getPageContext(tabId, 0);
+    await appendHistory({
+      id: `${id}:user`,
+      role: "user",
+      text,
+      source,
+      timestamp: nowIso(),
+    });
 
-    try {
-      await processMessageViaWebSocket(id, text, tabId, context);
-    } catch (wsError) {
-      await appendHistory({
-        id: `${id}:ws:fallback`,
-        role: "system",
-        text: `WebSocket unavailable, using HTTP fallback: ${toErrorMessage(wsError)}`,
-        timestamp: nowIso(),
-      });
-      const httpContext = await getPageContext(tabId, MAX_HTML_CONTEXT);
-      await processMessageViaHttp(id, text, tabId, httpContext);
-    }
+    await setPendingRequest({ id, text, source, tabId, startedAt: nowIso() });
+    await appendHistory({
+      id: `${id}:thinking`,
+      role: "system",
+      text: "Assistant is thinking...",
+      timestamp: nowIso(),
+    });
+
+    await withTimeout(
+      (async () => {
+        const context = await getPageContext(tabId, 0);
+
+        try {
+          await processMessageViaWebSocket(id, text, tabId, context);
+        } catch (wsError) {
+          await appendHistory({
+            id: `${id}:ws:fallback`,
+            role: "system",
+            text: `WebSocket unavailable, using HTTP fallback: ${toErrorMessage(wsError)}`,
+            timestamp: nowIso(),
+          });
+          const httpContext = await getPageContext(tabId, MAX_HTML_CONTEXT);
+          await processMessageViaHttp(id, text, tabId, httpContext);
+        }
+      })(),
+      REQUEST_OVERALL_TIMEOUT_MS,
+      `Request timed out after ${REQUEST_OVERALL_TIMEOUT_MS}ms`,
+    );
   } catch (error) {
     console.error("[Bropilot] processMessage failed", error);
     await appendHistory({
