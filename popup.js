@@ -276,9 +276,7 @@
       if (!isListening) return;
       try {
         recognition.start();
-      } catch (_e) {
-        // Ignore transient restart errors while dictation remains active.
-      }
+      } catch (_e) {}
     });
   } else {
     micBtn.disabled = true;
@@ -291,6 +289,25 @@
       loadState();
     }
   });
+
+  const bubbleContainer = document.getElementById("bubble-background");
+
+  if (bubbleContainer) {
+    for (let i = 0; i < 20; i++) {
+      const bubble = document.createElement("div");
+      bubble.classList.add("bubble");
+
+      const size = Math.random() * 40 + 10;
+
+      bubble.style.width = `${size}px`;
+      bubble.style.height = `${size}px`;
+      bubble.style.left = `${Math.random() * 100}%`;
+      bubble.style.animationDuration = `${Math.random() * 8 + 4}s`;
+      bubble.style.opacity = Math.random() * 0.5 + 0.2;
+
+      
+    }
+  }
 
   loadState();
 })();
