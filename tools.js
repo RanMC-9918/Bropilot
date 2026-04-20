@@ -25,38 +25,6 @@
     }
   }
 
-  async function waitForTabLoad(tabId, timeoutMs = 15000) {
-    return new Promise((resolve) => {
-      let settled = false;
-
-      const finish = (value) => {
-        if (settled) return;
-        settled = true;
-        clearTimeout(timer);
-        chrome.tabs.onUpdated.removeListener(onUpdated);
-        chrome.tabs.onRemoved.removeListener(onRemoved);
-        resolve(value);
-      };
-
-      const onUpdated = (updatedTabId, changeInfo) => {
-        if (updatedTabId !== tabId) return;
-        if (changeInfo.status === "complete") {
-          finish(true);
-        }
-      };
-
-      const onRemoved = (removedTabId) => {
-        if (removedTabId !== tabId) return;
-        finish(false);
-      };
-
-      const timer = setTimeout(() => finish(false), timeoutMs);
-
-      chrome.tabs.onUpdated.addListener(onUpdated);
-      chrome.tabs.onRemoved.addListener(onRemoved);
-    });
-  }
-
   async function runScrollToWord(tabId, regexText) {
     const [{ result }] = await chrome.scripting.executeScript({
       target: { tabId },
@@ -526,9 +494,6 @@
       if (!selector) return "Click failed: selector is missing.";
 
       const selectorResult = await runClickBySelector(tabId, selector);
-      if (selectorResult.ok && selectorResult.isNavigatingLink && !selectorResult.opensNewTab) {
-        await waitForTabLoad(tabId);
-      }
       return selectorResult.ok
         ? `Clicked selector: ${selector}`
         : `Click failed: ${selectorResult.reason}`;

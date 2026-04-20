@@ -217,6 +217,45 @@ function toolSucceeded(action, toolText) {
   return !text.includes("failed") && !text.includes("tool error");
 }
 
+async function waitForTabLoadComplete(tabId, timeoutMs = 15000) {
+  try {
+    const tab = await chrome.tabs.get(tabId);
+    if (!tab || tab.status === "complete") return true;
+  } catch (_error) {
+    return false;
+  }
+
+  return new Promise((resolve) => {
+    let settled = false;
+
+    const finish = (value) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      chrome.tabs.onUpdated.removeListener(onUpdated);
+      chrome.tabs.onRemoved.removeListener(onRemoved);
+      resolve(value);
+    };
+
+    const onUpdated = (updatedTabId, changeInfo) => {
+      if (updatedTabId !== tabId) return;
+      if (changeInfo.status === "complete") {
+        finish(true);
+      }
+    };
+
+    const onRemoved = (removedTabId) => {
+      if (removedTabId !== tabId) return;
+      finish(false);
+    };
+
+    const timer = setTimeout(() => finish(false), timeoutMs);
+
+    chrome.tabs.onUpdated.addListener(onUpdated);
+    chrome.tabs.onRemoved.addListener(onRemoved);
+  });
+}
+
 async function processMessageViaHttp(id, text, tabId, context) {
   const response = await fetch(API_URL, {
     method: "POST",
@@ -256,6 +295,7 @@ async function processMessageViaHttp(id, text, tabId, context) {
           text: `Using tool: ${action.command} (${actionInfoText})`,
           timestamp: nowIso(),
         });
+        await waitForTabLoadComplete(tabId);
     }
 
     const toolText = await BropilotTools.executeAction(tabId, action);
@@ -338,6 +378,7 @@ async function processMessageViaWebSocket(id, text, tabId, context) {
               text: `Using tool: ${action.command} (${actionInfoText})`,
               timestamp: nowIso(),
             });
+            await waitForTabLoadComplete(tabId);
         }
 
         let toolText = "";
