@@ -54,8 +54,9 @@ h1 {
   flex: 1;
   background: #1a2338;
   border: 1px solid #2a3657;
+  z-index: 2;
   border-radius: 16px;
-  box-shadow: 0 7px 13px 9px rgba(12, 13, 20, 0.25);
+  box-shadow: 0 0px 1px 4px rgba(23, 24, 33, 0.25);
   padding: 12px;
   overflow-y: auto;
   display: flex;
@@ -118,6 +119,7 @@ h1 {
   font-size: 13.5px;
   color: #e4ebff;
   background: #1f2a45;
+  box-shadow: 0 0px 1px 4px rgba(23, 24, 33, 0.25);
   outline: none;
 }
 
@@ -139,12 +141,13 @@ h1 {
 .send-btn {
   flex: 1;
   border-radius: 10px;
-  border: none;
+  border: 1px solid #6f82b6;
   height: 38px;
   font-size: 13px;
   font-weight: 600;
   font-family: "Inter", sans-serif;
   cursor: pointer;
+  box-shadow: 0 0px 2px 3px rgba(23, 24, 33, 0.25);
   transition:
     background 0.2s,
     transform 0.2s,
@@ -152,18 +155,23 @@ h1 {
 }
 
 .mic-btn {
-  background: #2f3f6d;
+  background: #6074af;
   color: #e2e9ff;
 }
 
 .mic-btn:hover,
 .send-btn:hover,
 .clear-btn:hover {
-  transform: translateY(-1px);
+  transform: scale(1.05);
+}
+.mic-btn:active,
+.send-btn:active,
+.clear-btn:active {
+  transform: scale(0.8);
 }
 
 .mic-btn:hover {
-  background: #394ca1;
+  background: #7988cd;
 }
 
 .mic-btn.active {
@@ -172,12 +180,12 @@ h1 {
 }
 
 .send-btn {
-  background: #4a69c8;
+  background: #314277;
   color: #f3f6ff;
 }
 
 .send-btn:hover {
-  background: #5a79da;
+  background: #41599f;
 }
 
 .clear-btn {
