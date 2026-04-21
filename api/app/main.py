@@ -129,6 +129,18 @@ def response_text(response: Any) -> str:
         return content.strip()
     if content is None:
         return ""
+    
+    if isinstance(content, list):
+        text_parts = []
+        for part in content:
+            if isinstance(part, str):
+                text_parts.append(part)
+            elif isinstance(part, dict) and "text" in part:
+                text_parts.append(part["text"])
+        if text_parts:
+            return "\n".join(text_parts).strip()
+        return ""
+
     return str(content).strip()
 
 
@@ -244,6 +256,16 @@ async def websocket_root(websocket: WebSocket):
                 }
             )
 
+            # Prune large old tool results to prevent context clogging
+            # We keep the last ~20 messages intact (approx 10 steps of interactions)
+            for i, msg in enumerate(chat_history[:-20]):
+                if isinstance(msg, ToolMessage) and msg.content and len(msg.content) > 500:
+                    chat_history[i] = ToolMessage(
+                        tool_call_id=msg.tool_call_id,
+                        name=msg.name,
+                        content=f"[Previous result size {len(msg.content)} truncated to save context window space. Re-run tool if needed.]"
+                    )
+
             try:
                 response = await primary_llm_with_tools.ainvoke(chat_history)
             except Exception as primary_error:
@@ -269,6 +291,21 @@ async def websocket_root(websocket: WebSocket):
             chat_history.append(response)
 
             tool_calls = list(getattr(response, "tool_calls", []) or [])
+
+            content_blocks = getattr(response, "content", "")
+            if isinstance(content_blocks, list):
+                for block in content_blocks:
+                    if isinstance(block, dict) and block.get("type") == "thinking":
+                        thinking_text = block.get("thinking", "")
+                        if thinking_text:
+                            await websocket.send_json(
+                                {
+                                    "type": "status",
+                                    "request_id": request_id,
+                                    "step_index": step_index,
+                                    "message": thinking_text,
+                                }
+                            )
 
             resp_txt = response_text(response)
             if resp_txt and not resp_txt.startswith('{') and not resp_txt.startswith('`'):

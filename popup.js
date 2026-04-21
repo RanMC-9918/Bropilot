@@ -70,14 +70,143 @@
     return "system";
   }
 
+  function formatMarkdown(text) {
+    if (typeof text !== "string") return "";
+    let lines = text.replace(/</g, "&lt;").replace(/>/g, "&gt;").split('\n');
+    let htmlLines = lines.map(line => {
+      line = line.replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>');
+      line = line.replace(/\*([^\*\n]+)\*/g, '<em>$1</em>');
+
+      if (line.match(/^\s*###\s+(.*)/)) {
+        return line.replace(/^\s*###\s+(.*)/, '<div style="font-weight: 700; font-size: 14.5px; margin-top: 8px; margin-bottom: 2px;">$1</div>');
+      } else if (line.match(/^\s*##\s+(.*)/)) {
+        return line.replace(/^\s*##\s+(.*)/, '<div style="font-weight: 700; font-size: 15.5px; margin-top: 8px; margin-bottom: 2px;">$1</div>');
+      } else if (line.match(/^\s*#\s+(.*)/)) {
+        return line.replace(/^\s*#\s+(.*)/, '<div style="font-weight: 800; font-size: 16.5px; margin-top: 8px; margin-bottom: 2px;">$1</div>');
+      } else if (line.match(/^\s*[\*\-]\s+(.*)/)) {
+        return line.replace(/^\s*[\*\-]\s+(.*)/, '<div style="display: list-item; list-style-type: disc; margin-left: 20px; line-height: 1.4;">$1</div>');
+      } else {
+        return line + '<br>';
+      }
+    });
+
+    return htmlLines.join('').replace(/(<br>)*$/, "");
+  }
+
   function renderHistory(history) {
     chatBox.innerHTML = "";
 
+    let currentSystemGroup = null;
+
+    const flattenedHistory = [];
     history.forEach((item) => {
-      const node = document.createElement("div");
-      node.className = `message ${toMessageClass(item.role)}`;
-      node.textContent = item.text;
-      chatBox.appendChild(node);
+      if (item.role === "bot" && typeof item.text === "string" && item.text.includes("'type': 'thinking'")) {
+        const parts = item.text.split(/\}\s*,\s*\{/);
+        parts.forEach((p) => {
+          if (p.includes("'thinking':")) {
+            let txt = p.replace(/^\[?\{?\s*'type'\s*:\s*'thinking'\s*,\s*'thinking'\s*:\s*['"]/, "");
+            txt = txt.replace(/['"]\s*\}?\]?$/, "");
+            txt = txt.replace(/\\n/g, "\n").replace(/\\'/g, "'").replace(/\\"/g, '"');
+            flattenedHistory.push({ role: "system", text: txt });
+          } else if (p.includes("'text':")) {
+            let txt = p.replace(/^\[?\{?\s*'type'\s*:\s*'text'\s*,\s*'text'\s*:\s*['"]/, "");
+            txt = txt.replace(/['"]\s*\}?\]?$/, "");
+            txt = txt.replace(/\\n/g, "\n").replace(/\\'/g, "'").replace(/\\"/g, '"');
+            flattenedHistory.push({ role: "bot", text: txt });
+          }
+        });
+      } else {
+        flattenedHistory.push(item);
+      }
+    });
+
+    flattenedHistory.forEach((item) => {
+      let isSystem = item.role === "system";
+      
+      if (isSystem) {
+        if (!currentSystemGroup) {
+          currentSystemGroup = document.createElement("details");
+          currentSystemGroup.className = "message system";
+          
+          const summary = document.createElement("summary");
+          summary.textContent = "Thinking...";
+          summary.style.cursor = "pointer";
+          summary.style.fontWeight = "600";
+          summary.style.userSelect = "none";
+          
+          const innerContainer = document.createElement("div");
+          innerContainer.style.marginTop = "6px";
+          innerContainer.style.display = "flex";
+          innerContainer.style.flexDirection = "column";
+          innerContainer.style.gap = "4px";
+          
+          currentSystemGroup.appendChild(summary);
+          currentSystemGroup.appendChild(innerContainer);
+          chatBox.appendChild(currentSystemGroup);
+        }
+        
+        const node = document.createElement("div");
+        node.style.opacity = "0.85";
+        node.style.whiteSpace = "normal";
+        node.innerHTML = formatMarkdown(item.text);
+        
+        currentSystemGroup.lastElementChild.appendChild(node);
+      } else {
+        currentSystemGroup = null;
+        
+        const node = document.createElement("div");
+        node.className = `message ${toMessageClass(item.role)}`;
+        node.style.whiteSpace = "normal";
+
+        if (item.role === "tool") {
+          const lineCount = (item.text.match(/\n/g) || []).length + 1;
+          if (lineCount > 10 || item.text.length > 500) {
+            const contentDiv = document.createElement("div");
+            contentDiv.style.overflow = "hidden";
+            contentDiv.style.display = "-webkit-box";
+            contentDiv.style.webkitLineClamp = "10";
+            contentDiv.style.webkitBoxOrient = "vertical";
+            contentDiv.innerHTML = formatMarkdown(item.text);
+
+            const expandBtn = document.createElement("button");
+            expandBtn.textContent = "Show More";
+            expandBtn.style.marginTop = "6px";
+            expandBtn.style.background = "rgba(0, 0, 0, 0.15)";
+            expandBtn.style.border = "1px solid rgba(255, 255, 255, 0.2)";
+            expandBtn.style.color = "inherit";
+            expandBtn.style.borderRadius = "6px";
+            expandBtn.style.padding = "3px 8px";
+            expandBtn.style.cursor = "pointer";
+            expandBtn.style.fontSize = "11px";
+            expandBtn.style.fontWeight = "500";
+            expandBtn.style.transition = "background 0.2s";
+            
+            expandBtn.onmouseover = () => expandBtn.style.background = "rgba(0, 0, 0, 0.3)";
+            expandBtn.onmouseout = () => expandBtn.style.background = "rgba(0, 0, 0, 0.15)";
+
+            let isExpanded = false;
+            expandBtn.onclick = () => {
+              isExpanded = !isExpanded;
+              if (isExpanded) {
+                contentDiv.style.webkitLineClamp = "unset";
+                expandBtn.textContent = "Show Less";
+              } else {
+                contentDiv.style.webkitLineClamp = "10";
+                expandBtn.textContent = "Show More";
+              }
+            };
+
+            node.appendChild(contentDiv);
+            node.appendChild(expandBtn);
+          } else {
+            node.innerHTML = formatMarkdown(item.text);
+          }
+        } else {
+          node.innerHTML = formatMarkdown(item.text);
+        }
+
+        chatBox.appendChild(node);
+      }
     });
 
     chatBox.scrollTop = chatBox.scrollHeight;
@@ -304,9 +433,75 @@
       bubble.style.left = `${Math.random() * 100}%`;
       bubble.style.animationDuration = `${Math.random() * 8 + 4}s`;
       bubble.style.opacity = Math.random() * 0.5 + 0.2;
-
-      
     }
+  }
+
+  // Interactive trailing gradients
+  const gradientsContainer = document.querySelector(".gradients-container");
+  if (gradientsContainer) {
+      const interactive1 = document.createElement("div");
+      interactive1.classList.add("interactive", "i1");
+      
+      const interactive2 = document.createElement("div");
+      interactive2.classList.add("interactive", "i2");
+
+      const interactive3 = document.createElement("div");
+      interactive3.classList.add("interactive", "i3");
+
+      gradientsContainer.appendChild(interactive1);
+      gradientsContainer.appendChild(interactive2);
+      gradientsContainer.appendChild(interactive3);
+      
+      let tgX = window.innerWidth ? window.innerWidth / 2 : 200;
+      let tgY = window.innerHeight ? window.innerHeight / 2 : 280;
+
+      let curX1 = tgX, curY1 = tgY;
+      let curX2 = tgX, curY2 = tgY;
+      let curX3 = tgX, curY3 = tgY;
+
+      let lastMoveTime = Date.now();
+      let pulseAmp = 0;
+      let pulsePhase = 0;
+
+      function animateInteractive() {
+          const now = Date.now();
+          const idleTime = now - lastMoveTime;
+          
+          if (idleTime > 300) {
+              pulseAmp += (0.35 - pulseAmp) * 0.02;
+          } else {
+              pulseAmp += (0 - pulseAmp) * 0.1;
+          }
+          
+          pulsePhase += 0.015;
+
+          curX1 += (tgX - curX1) / 20;
+          curY1 += (tgY - curY1) / 20;
+
+          curX2 += (tgX - curX2) / 35;
+          curY2 += (tgY - curY2) / 35;
+
+          curX3 += (tgX - curX3) / 50;
+          curY3 += (tgY - curY3) / 50;
+
+          const scale1 = 1 + pulseAmp * Math.sin(pulsePhase);
+          const scale2 = 1 + pulseAmp * Math.sin(pulsePhase + Math.PI / 2);
+          const scale3 = 1 + pulseAmp * Math.sin(pulsePhase + Math.PI);
+
+          interactive1.style.transform = `translate(${Math.round(curX1)}px, ${Math.round(curY1)}px) scale(${scale1})`;
+          interactive2.style.transform = `translate(${Math.round(curX2)}px, ${Math.round(curY2)}px) scale(${scale2})`;
+          interactive3.style.transform = `translate(${Math.round(curX3)}px, ${Math.round(curY3)}px) scale(${scale3})`;
+
+          requestAnimationFrame(animateInteractive);
+      }
+
+      window.addEventListener("mousemove", (event) => {
+          tgX = event.clientX;
+          tgY = event.clientY;
+          lastMoveTime = Date.now();
+      });
+
+      animateInteractive();
   }
 
   loadState();

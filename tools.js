@@ -446,11 +446,12 @@
             const tag = el.tagName.toLowerCase();
             const id = el.id ? ` id='${el.id}'` : "";
             const cls = el.className ? ` class='${el.className}'` : "";
+            const ariaLabel = el.getAttribute("aria-label") ? ` aria-label='${el.getAttribute("aria-label")}'` : "";
             let text = "";
             if (el.innerText) {
-                text = ` text='${el.innerText.trim().substring(0, 100).replace(/\\n/g, " ")}'`;
+                text = el.innerText.trim().substring(0, 100).replace(/\\n/g, " ");
             }
-            return `[${tag}]${id}${cls}${text}`;
+            return `<${tag}${id}${cls}${ariaLabel}>${text}</${tag}>`;
           }).join("\\n");
         } catch (e) {
           return `Error: ${e.message}`;

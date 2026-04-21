@@ -2,7 +2,7 @@
 
 importScripts("tools.js");
 
-const API_URL = true ? "http://localhost:8000" : "https://api.sarveshs.dev";
+const API_URL = false ? "http://localhost:8000" : "https://api.sarveshs.dev";
 const MAX_HTML_CONTEXT = 60000;
 const HISTORY_LIMIT = 120;
 const WS_CONNECT_TIMEOUT_MS = 10000;
