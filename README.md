@@ -12,8 +12,8 @@
    ```
    edge://extensions
    ```
-4. Switch on developer mode (Read <a href="https://developer.chrome.com/docs/extensions/get-started/tutorial/hello-world#load-unpacked" target="_blank" rel="noopener noreferrer">Loading an Unpacked Extension</a>)
-5. 
+4. Switch on developer mode (Read [Loading an Unpacked Extension](https://developer.chrome.com/docs/extensions/get-started/tutorial/hello-world#load-unpacked) for help)
+5. Click Load Unpacked and choose
 
 ## Local model setup (Ollama) {id="local"}
 
