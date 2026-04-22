@@ -1,7 +1,21 @@
 # Bropilot
-Bropilot
+## Simple Installation
+1. Click on Code in Github and download as zip
+2. Extract the zip file
+3. Go to Extensions page in your respective browser
 
-## Local model setup (Ollama)
+   Chrome
+   ```
+   chrome://extensions
+   ```
+   Edge
+   ```
+   edge://extensions
+   ```
+4. Switch on developer mode (Read [Loading an Unpacked Extension](https://developer.chrome.com/docs/extensions/get-started/tutorial/hello-world#load-unpacked))
+5. 
+
+## Local model setup (Ollama) {id="local"}
 
 The API now uses Ollama instead of Gemini.
 
