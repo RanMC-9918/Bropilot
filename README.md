@@ -13,9 +13,9 @@
    edge://extensions
    ```
 4. Switch on developer mode (Read [Loading an Unpacked Extension](https://developer.chrome.com/docs/extensions/get-started/tutorial/hello-world#load-unpacked) for help)
-5. Click Load Unpacked and choose
+5. Click Load Unpacked and choose the unzipped folder
 
-## Local model setup (Ollama) {id="local"}
+## Local model setup (Ollama)
 
 The API now uses Ollama instead of Gemini.
 
@@ -39,7 +39,7 @@ We have a number of tools to cover everyday tasks where bropilot could be used, 
 
 - GetPageContent (returns all visible text)
 - GetPageClickables (returns all clickable elements)
-- GetPageLinks (returns all link elements \gt a \lt)
+- GetPageLinks (returns all link elements <a>)
 - ClickElementWithCSSSelector (returns after clicks CSS selected element)
 - ClickElementWithRegexp (returns after clicks a regexp matched element)
 - OpenNewTab (returns after opens the url in a new tab)
